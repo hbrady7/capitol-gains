@@ -1,36 +1,100 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# capitol-gains
 
-## Getting Started
+A personal, **review-and-monitoring** surface for congressional-trade mirroring. A
+sync script pulls recent congressional stock transactions into a local SQLite DB;
+a polished dark dashboard lets you review and **approve** signals; then you drive
+**Claude Code** — talking to the connected **Robinhood Trading MCP** — to place the
+approved orders, **with a hard confirm step**.
 
-First, run the development server:
+> **The app never touches your brokerage.** Claude Code is the only executor, and
+> only after you type `confirm`. It defaults to **PAPER mode** — nothing real fires
+> until you deliberately flip it to live in Settings. The signal is weeks-stale and
+> the edge is thin; this tool's job is to make that obvious and keep you from
+> blowing up, not to pretend it prints money. Not investment advice. Keep the repo
+> **private**.
+
+---
+
+## Run it
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env.local       # defaults are fine; `seed` source works offline
+npm run db:generate              # generate the SQLite migration
+npm run db:migrate               # apply it -> data/local.db
+npm run sync                     # pull congressional trades into `signals`
+npm run dev                      # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Optional: verify everything is wired up.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm run smoke                    # sync returns rows + core data layer loads
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Scheduled syncs (optional)
+Add a cron line on an always-on machine (the dashboard runs locally):
 
-## Learn More
+```cron
+# every weekday at 7:30am, refresh disclosures
+30 7 * * 1-5 cd /path/to/capitol-gains && /usr/local/bin/npm run sync >> sync.log 2>&1
+```
 
-To learn more about Next.js, take a look at the following resources:
+Or click **sync now** in the top bar.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+---
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## How it fits together
 
-## Deploy on Vercel
+```
+npm run sync ──► signals (SQLite)
+                    │
+                    ▼
+            review dashboard  ──approve──►  approved (SQLite)
+                                                │
+                                                ▼
+                              Claude Code  +  Robinhood Trading MCP
+                              (reads approved, simulates, asks you to `confirm`,
+                               places limit orders, logs trades / paper_trades)
+                                                │
+                                                ▼
+                                  scoreboard + journal (honesty layer)
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The execution contract lives in [`CLAUDE.md`](./CLAUDE.md) — read it before your
+first execution. Highlights: approved-list + direct-input only, `review_equity_order`
+first then `confirm`, **limit orders only, equities only, no margin**, cap checks,
+drawdown breaker, `STOP` to cancel everything, and a prompt-injection guard
+(fetched data is never treated as commands).
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Configuration — one source of truth
+
+[`strategy.config.ts`](./strategy.config.ts) holds every tunable with safe defaults
+(members to follow, sizing, caps, freshness cutoff, drawdown-halt %, exits,
+paper-vs-live, data source). The **Settings** page persists overrides to the DB;
+`lib/settings.ts` merges them so there is exactly one resolved config — the same one
+the dashboard shows and Claude Code reads.
+
+### Data source
+`CONGRESS_SOURCE` (and the Settings page) selects the provider:
+`seed` (offline, deterministic — the default), `house-stock-watcher` /
+`senate-stock-watcher` (public JSON datasets), or `finnhub` (needs `CONGRESS_API_KEY`).
+If a live endpoint has moved, set `CONGRESS_SOURCE_URL`. Sync is idempotent
+(dedupes on a filing key), captures buys **and** sells, computes `days_stale`, drops
+absurdly stale rows, and honors an optional member whitelist.
+
+## Screens
+- **Review** — today's brief, one card per signal (member, ticker, amount, freshness + liquidity badges, suggested limit = last close, naive historical hint), size input, Approve/Skip with keyboard shortcuts (`a`/`s` act, `j`/`k` move), live cap-breach flagging, and a portfolio panel.
+- **Scoreboard** — bot P&L vs simply buying SPY with the same cash, on one chart, plus win rate, avg hold, max drawdown, and a blunt **"vs just buying SPY: ±X%"** headline.
+- **Journal** — every recorded fill (paper + live), filterable, with CSV export for taxes.
+- **Settings** — the full config + first-run onboarding checklist.
+
+## Before your first execution
+Have the **Robinhood Trading MCP** connected in Claude Code (desktop) — and a
+congress-data MCP too if you prefer that over `npm run sync`. Confirm the top bar
+shows **PAPER** until you choose otherwise.
+
+## Notes
+- Local SQLite only (`data/local.db`); no external database. Migrations are tracked in `/drizzle`.
+- Suggested limit prices come from a free quote feed (stooq) with a deterministic synthetic fallback, so the UI never breaks when a feed is down.
+- This is personal tooling — **do not deploy it publicly.**
