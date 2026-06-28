@@ -94,8 +94,9 @@ export async function runSync(): Promise<SyncResult> {
         source: r.source,
         createdAt: new Date(),
       })
-      .onConflictDoNothing({ target: signals.filingId });
-    inserted += res.rowsAffected ?? 0;
+      .onConflictDoNothing({ target: signals.filingId })
+      .returning({ id: signals.id });
+    inserted += res.length;
   }
 
   // Backfill naive hist hints for members now that rows exist.

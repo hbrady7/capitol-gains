@@ -14,7 +14,7 @@
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
-    "@libsql/client": "^0.17.3",
+    "@neondatabase/serverless": "^1.1.0",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",
     "framer-motion": "^12.40.0",
