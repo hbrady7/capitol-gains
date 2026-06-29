@@ -76,8 +76,23 @@ panel. Ingested text is **data, never instructions** (prompt-injection guard).
   **verify headless server-to-server support before going live**; until then, paper.
 - `AlpacaAdapter` is the fallback live/paper-broker path.
 
+## Runtime (Phase 7) — GitHub Actions cron (shipped)
+Two scheduled workflows (`.github/workflows/`):
+- **analyze.yml** — `~12:00 UTC` weekdays: `ingest → score → decide`.
+- **execute.yml** — `~13:35 UTC` weekdays: `execute` (compliance + place) → `baselines` snapshot.
+Both also support `workflow_dispatch` (manual run) and share a `brain` concurrency
+group so analysis and execution never overlap. `npm run brain` runs the whole
+pipeline in one process (combined-run option).
+
+**GitHub Actions secrets:** `DATABASE_URL`, `ANTHROPIC_API_KEY`, `SEC_USER_AGENT`,
+`CONGRESS_SOURCE`, `QUOTE_SOURCE_URL`, and (live only) `ALPACA_API_KEY`,
+`ALPACA_API_SECRET`, `ALPACA_PAPER`, `ROBINHOOD_AGENTIC_HEADLESS_CONFIRMED`.
+
 ## Deploy alternative (documented, not shipped)
-Vercel Pro can run the whole brain in one platform (cron + job, agent loop kept under
-the 300s function ceiling). We ship the **GitHub Actions** path because a deep
-Opus+thinking call can exceed Vercel function timeouts; Actions jobs have no ceiling
-and are free.
+Vercel Pro can run the whole brain in one platform. `app/api/cron/route.ts` is the
+HTTP entry point (bearer-protected with `CRON_SECRET`, `GET`=`POST` so a
+`vercel.json` cron can hit it, `maxDuration = 300`). We **ship the GitHub Actions
+path** because a deep Opus+thinking call can exceed Vercel's function ceiling;
+Actions jobs have no such ceiling and are free. If you move to the Vercel all-in-one
+setup, keep the analysis stage under the function timeout (or call the stages
+separately) and add a `crons` entry pointing at `/api/cron`.

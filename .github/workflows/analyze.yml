@@ -1,0 +1,36 @@
+name: analyze (pre-open)
+
+# Pre-open analysis: ingest both feeds → score the CCS → let Opus decide.
+# Execution is a SEPARATE workflow (execute.yml) that runs at market open.
+on:
+  schedule:
+    - cron: "0 12 * * 1-5" # ~12:00 UTC, weekdays (before US market open)
+  workflow_dispatch: {} # allow manual runs from the Actions tab
+
+concurrency:
+  group: brain
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+      CONGRESS_SOURCE: ${{ secrets.CONGRESS_SOURCE }}
+      QUOTE_SOURCE_URL: ${{ secrets.QUOTE_SOURCE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+      - run: npm ci
+      - name: ingest (congress + EDGAR Form 4)
+        run: npm run ingest
+      - name: score (Convergence Conviction Score)
+        run: npm run score
+      - name: decide (Claude Opus 4.8 + extended thinking)
+        run: npm run decide
