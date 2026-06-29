@@ -9,7 +9,7 @@
  */
 import { and, eq, gte, sql } from "drizzle-orm";
 import { db } from "./db";
-import { fills, positions } from "./schema";
+import { fills, meta, positions } from "./schema";
 import { accountFor, type RunConfig } from "./config";
 import { getLastCloses } from "./quotes";
 
@@ -66,4 +66,32 @@ export async function getNav(cfg: Pick<RunConfig, "paperMode">): Promise<number>
   const quotes = await getLastCloses(pos.map((p) => p.ticker));
   const mv = pos.reduce((s, p) => s + p.qty * (quotes[p.ticker]?.price ?? p.avgPrice), 0);
   return cash + mv;
+}
+
+/** High-water mark for the drawdown breaker. Reads the stored HWM, advances it if
+ *  `currentNav` is a new high (persisting it), and returns the effective HWM. */
+export async function getHighWaterMark(
+  cfg: Pick<RunConfig, "paperMode">,
+  currentNav: number,
+): Promise<number> {
+  const key = `hwm_${accountFor(cfg)}`;
+  let stored = PAPER_STARTING_CAPITAL;
+  try {
+    const [row] = await db.select().from(meta).where(eq(meta.key, key)).limit(1);
+    if (row) stored = Number(row.value) || PAPER_STARTING_CAPITAL;
+  } catch {
+    /* meta table absent — use starting capital */
+  }
+  const hwm = Math.max(stored, currentNav);
+  if (hwm > stored) {
+    try {
+      await db
+        .insert(meta)
+        .values({ key, value: String(hwm), updatedAt: new Date() })
+        .onConflictDoUpdate({ target: meta.key, set: { value: String(hwm), updatedAt: new Date() } });
+    } catch {
+      /* best-effort */
+    }
+  }
+  return hwm;
 }
