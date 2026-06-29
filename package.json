@@ -12,6 +12,7 @@
     "score": "tsx scripts/score.ts",
     "decide": "tsx scripts/decide.ts",
     "execute": "tsx scripts/execute.ts",
+    "baselines": "tsx scripts/baselines.ts",
     "brain": "tsx scripts/brain.ts",
     "smoke": "tsx scripts/smoke.ts",
     "db:generate": "drizzle-kit generate",

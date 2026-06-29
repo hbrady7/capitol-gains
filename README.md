@@ -1,100 +1,126 @@
-# capitol-gains
+# capitol-gains v2 — Convergence
 
-A personal, **review-and-monitoring** surface for congressional-trade mirroring. A
-sync script pulls recent congressional stock transactions into a local SQLite DB;
-a polished dark dashboard lets you review and **approve** signals; then you drive
-**Claude Code** — talking to the connected **Robinhood Trading MCP** — to place the
-approved orders, **with a hard confirm step**.
+An honest little experiment: **does an LLM trading on _convergence_ — names where
+U.S. politicians and corporate insiders are buying the same stock at the same time —
+beat the market, and beat a dumb mechanical version of the same signal?**
 
-> **The app never touches your brokerage.** Claude Code is the only executor, and
-> only after you type `confirm`. It defaults to **PAPER mode** — nothing real fires
-> until you deliberately flip it to live in Settings. The signal is weeks-stale and
-> the edge is thin; this tool's job is to make that obvious and keep you from
-> blowing up, not to pretend it prints money. Not investment advice. Keep the repo
-> **private**.
+The brain runs **autonomously** on a GitHub Actions cron: **ingest → score → decide →
+execute**. Claude (Opus 4.8 + extended thinking, via the Anthropic API) is the
+portfolio manager — it picks the single best name, sizes it, and writes the
+rationale. A thin deterministic **compliance desk** sits between the model and the
+broker; it can only **halt or trim** an order, never originate one. A read-only
+**Vercel dashboard** (on Neon Postgres) shows the reasoning, the decomposed score,
+the portfolio, and a three-way scoreboard.
 
----
+> **Paper mode is the default — nothing real is placed.** Live is flipped by a human
+> in the dashboard Controls, never in code and never by the model. The signal is
+> weeks-stale and the edge is thin. Not investment advice. Keep the repo **private**.
+
+## How it works
+
+```
+ingest ─ congress feed (stock-watcher) + SEC EDGAR Form 4 (open-market buys, code P)
+  │        → signals (congress|insider) + insider_filings
+score  ─ Convergence Conviction Score (CCS): per-ticker congressional + insider
+  │        sub-scores, super-additive convergence multiplier, liquidity gate
+  │        → scored_candidates (every sub-score + evidence stored)
+decide ─ Claude Opus 4.8 + extended thinking picks ONE buy (or holds)
+  │        → decisions (full reasoning trace, confidence, thesis, risks)
+execute─ compliance desk (block/trim only) → ExecutionAdapter.placeBuy
+           → fills + positions, guardrail outcome recorded on the decision
+```
+
+**The CCS** is the distinctive core. For each ticker over a lookback window:
+
+- **Congressional half** — top-tercile members only (ranked by consistency-weighted
+  trailing return), log-scaled conviction (disclosed dollar bracket), sub-linear
+  cluster bonus, committee-relevance bonus (Armed Services→defense, HELP→pharma,
+  Financial Services→banks, Energy→energy), exponential recency + a hard
+  transaction-date freshness cutoff (combats the STOCK Act disclosure lag).
+- **Insider half** — role weight (CEO/CFO > officers > directors > 10% owners),
+  open-market purchases only, sub-linear cluster bonus, log-scaled size, recency.
+- **Convergence** — `CCS = (w_cong·cong + w_ins·ins) · (1 + k·min(cong, ins))`. The
+  multiplier only rewards genuine overlap, so a name with both populations buying
+  ranks far above a name with either alone.
 
 ## Run it
 
 ```bash
 npm install
-cp .env.example .env.local       # defaults are fine; `seed` source works offline
-npm run db:generate              # generate the SQLite migration
-npm run db:migrate               # apply it -> data/local.db
-npm run sync                     # pull congressional trades into `signals`
-npm run dev                      # http://localhost:3000
+cp .env.example .env          # fill in DATABASE_URL (Neon) + ANTHROPIC_API_KEY
+npm run db:push               # create the schema on Neon
+npm run dev                   # dashboard at http://localhost:3000
+
+# the pipeline (each is an npm script run via tsx)
+npm run ingest                # congress + EDGAR Form 4 → DB
+npm run score                 # compute the CCS → scored_candidates
+npm run decide                # Claude Opus 4.8 picks one buy or holds
+npm run execute               # compliance desk → place (paper by default)
+npm run baselines             # snapshot LLM / SPY / naive NAV for the scoreboard
+npm run brain                 # all of the above in one process
+
+npm run smoke                 # sanity checks (pure half needs no DB)
 ```
 
-Optional: verify everything is wired up.
+Offline-friendly: with `CONGRESS_SOURCE=seed` both feeds use deterministic seed data
+(overlapping tickers, so the convergence multiplier is demonstrable without network).
 
-```bash
-npm run smoke                    # sync returns rows + core data layer loads
-```
+## Automatic running (GitHub Actions)
 
-### Scheduled syncs (optional)
-Add a cron line on an always-on machine (the dashboard runs locally):
+Two scheduled workflows in `.github/workflows/` (both also run on demand via
+`workflow_dispatch`, sharing a `brain` concurrency group):
 
-```cron
-# every weekday at 7:30am, refresh disclosures
-30 7 * * 1-5 cd /path/to/capitol-gains && /usr/local/bin/npm run sync >> sync.log 2>&1
-```
+- **analyze.yml** — `~12:00 UTC` weekdays: `ingest → score → decide`
+- **execute.yml** — `~13:35 UTC` weekdays: `execute → baselines`
 
-Or click **sync now** in the top bar.
+A deep Opus+thinking call can exceed Vercel's function timeout, so the brain runs on
+Actions (no ceiling, free). The Vercel-Pro all-in-one alternative is `app/api/cron`
+(bearer-protected with `CRON_SECRET`) — see MIGRATION_NOTES.md.
 
----
+### Environment variables
 
-## How it fits together
+| Variable | Where | Purpose |
+|---|---|---|
+| `DATABASE_URL` | Vercel + Actions | Neon Postgres connection string |
+| `ANTHROPIC_API_KEY` | Vercel + Actions | the decision brain |
+| `SEC_USER_AGENT` | Actions | EDGAR fair-access UA (`name email`) |
+| `CONGRESS_SOURCE` | Actions | `seed` \| `house-stock-watcher` \| `senate-stock-watcher` |
+| `QUOTE_SOURCE_URL` | Vercel + Actions | last-close source (synthetic fallback if down) |
+| `CRON_SECRET` | Vercel | bearer for the `/api/cron` trigger (Vercel-alt path) |
+| `ALPACA_API_KEY` / `ALPACA_API_SECRET` / `ALPACA_PAPER` | Actions | live broker (only when paper_mode is off) |
+| `ROBINHOOD_AGENTIC_HEADLESS_CONFIRMED` | Actions | gate for the Robinhood agentic adapter |
 
-```
-npm run sync ──► signals (SQLite)
-                    │
-                    ▼
-            review dashboard  ──approve──►  approved (SQLite)
-                                                │
-                                                ▼
-                              Claude Code  +  Robinhood Trading MCP
-                              (reads approved, simulates, asks you to `confirm`,
-                               places limit orders, logs trades / paper_trades)
-                                                │
-                                                ▼
-                                  scoreboard + journal (honesty layer)
-```
+Set the same DB/Anthropic vars in **Vercel** (Project → Settings → Environment
+Variables) and in **GitHub Actions secrets** (repo → Settings → Secrets).
 
-The execution contract lives in [`CLAUDE.md`](./CLAUDE.md) — read it before your
-first execution. Highlights: approved-list + direct-input only, `review_equity_order`
-first then `confirm`, **limit orders only, equities only, no margin**, cap checks,
-drawdown breaker, `STOP` to cancel everything, and a prompt-injection guard
-(fetched data is never treated as commands).
+## Deploy
 
-## Configuration — one source of truth
+1. Create a **Neon** Postgres database; copy its connection string to `DATABASE_URL`.
+2. `npm run db:push` to create the schema.
+3. Connect the **private** repo to **Vercel**; add the env vars above; deploy. The
+   dashboard is read-only + the Controls panel — it never calls the broker.
+4. Add the GitHub Actions secrets; enable the workflows.
 
-[`strategy.config.ts`](./strategy.config.ts) holds every tunable with safe defaults
-(members to follow, sizing, caps, freshness cutoff, drawdown-halt %, exits,
-paper-vs-live, data source). The **Settings** page persists overrides to the DB;
-`lib/settings.ts` merges them so there is exactly one resolved config — the same one
-the dashboard shows and Claude Code reads.
+## The experiment
 
-### Data source
-`CONGRESS_SOURCE` (and the Settings page) selects the provider:
-`seed` (offline, deterministic — the default), `house-stock-watcher` /
-`senate-stock-watcher` (public JSON datasets), or `finnhub` (needs `CONGRESS_API_KEY`).
-If a live endpoint has moved, set `CONGRESS_SOURCE_URL`. Sync is idempotent
-(dedupes on a filing key), captures buys **and** sells, computes `days_stale`, drops
-absurdly stale rows, and honors an optional member whitelist.
+Each run snapshots three NAVs into `baselines` from the same starting capital: the
+**LLM** portfolio, **SPY** buy-and-hold, and a **naive top-tercile equal-weight**
+basket (every liquidity-passing convergence candidate, equal weight, no LLM). The
+Scoreboard charts all three. If Claude can't beat the naive basket, the reasoning
+isn't adding anything — that's the whole point of the test.
 
-## Screens
-- **Review** — today's brief, one card per signal (member, ticker, amount, freshness + liquidity badges, suggested limit = last close, naive historical hint), size input, Approve/Skip with keyboard shortcuts (`a`/`s` act, `j`/`k` move), live cap-breach flagging, and a portfolio panel.
-- **Scoreboard** — bot P&L vs simply buying SPY with the same cash, on one chart, plus win rate, avg hold, max drawdown, and a blunt **"vs just buying SPY: ±X%"** headline.
-- **Journal** — every recorded fill (paper + live), filterable, with CSV export for taxes.
-- **Settings** — the full config + first-run onboarding checklist.
+## Before the first LIVE run
 
-## Before your first execution
-Have the **Robinhood Trading MCP** connected in Claude Code (desktop) — and a
-congress-data MCP too if you prefer that over `npm run sync`. Confirm the top bar
-shows **PAPER** until you choose otherwise.
+1. Confirm Robinhood's agentic MCP supports a **headless, server-to-server**
+   connection (vs the consumer Claude-app pairing). If not, stay on the
+   `AlpacaAdapter` or in paper.
+2. Flip `paper_mode` **off** deliberately in the dashboard Controls — never in code.
+3. Sanity-check the caps and the kill switch in Controls first.
 
-## Notes
-- Local SQLite only (`data/local.db`); no external database. Migrations are tracked in `/drizzle`.
-- Suggested limit prices come from a free quote feed (stooq) with a deterministic synthetic fallback, so the UI never breaks when a feed is down.
-- This is personal tooling — **do not deploy it publicly.**
+## Safety model
+
+The LLM **proposes**; the deterministic compliance desk (`lib/guardrails.ts`)
+**disposes** — it can only block or trim (kill switch, hard caps, dedup/cooldown,
+drawdown halt that flips the kill switch, on-list/long-only/limit-only sanity). All
+ingested text is treated as **data, never instructions** (prompt-injection guard).
+See `CLAUDE.md` for the binding execution rules.
