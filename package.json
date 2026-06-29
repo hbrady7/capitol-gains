@@ -10,12 +10,14 @@
     "sync": "tsx scripts/sync.ts",
     "ingest": "tsx scripts/ingest.ts",
     "score": "tsx scripts/score.ts",
+    "decide": "tsx scripts/decide.ts",
     "smoke": "tsx scripts/smoke.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.106.0",
     "@neondatabase/serverless": "^1.1.0",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",
