@@ -1,69 +1,69 @@
-import { getScoreboard } from "@/lib/scoreboard";
-import { ScoreboardChart } from "@/components/ScoreboardChart";
-import { fmtPct } from "@/lib/format";
+import { BaselineChart } from "@/components/BaselineChart";
+import { getBaselineView } from "@/lib/baselines";
+import { fmtPct, fmtUsd } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
 export default async function ScoreboardPage() {
-  const s = await getScoreboard();
+  const bl = await getBaselineView();
+  const { llm, spy, naive } = bl.returns;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-lg font-semibold tracking-tight">Scoreboard</h1>
-        <p className="mt-1 text-sm text-zinc-500">
-          The only question that matters: are you beating a boring index fund? Same cash, same dates.
+    <div className="space-y-8">
+      <section>
+        <h1 className="text-xl font-semibold tracking-tight">Scoreboard</h1>
+        <p className="mt-1 text-sm muted">
+          The honest answer to &quot;is this working?&quot; — Claude&apos;s portfolio against the S&amp;P 500
+          and against a dumb, equal-weight version of the same convergence signal. If Claude can&apos;t beat
+          the naive basket, the reasoning isn&apos;t adding anything.
         </p>
-      </div>
+      </section>
 
-      {/* Blunt headline */}
-      <div
-        className={`rounded-xl border p-5 ${
-          s.vsSpyPct == null
-            ? "border-zinc-800 bg-zinc-900/40"
-            : s.vsSpyPct >= 0
-              ? "border-emerald-700 bg-emerald-500/10"
-              : "border-rose-800 bg-rose-500/10"
-        }`}
-      >
-        <div className="text-xs uppercase tracking-wide text-zinc-500">vs just buying SPY</div>
-        <div className={`mt-1 text-3xl font-bold ${s.vsSpyPct == null ? "text-zinc-400" : s.vsSpyPct >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-          {s.vsSpyPct == null ? "—" : fmtPct(s.vsSpyPct)}
-        </div>
-        {s.strategyReturnPct != null && s.spyReturnPct != null && (
-          <div className="mt-1 text-xs text-zinc-500">
-            bot {fmtPct(s.strategyReturnPct)} · SPY {fmtPct(s.spyReturnPct)}
+      {/* Blunt headline. */}
+      <div className="card p-6">
+        {bl.vsSpy == null ? (
+          <p className="text-sm faint">
+            Not enough history yet. Once the daily baseline snapshots accumulate, the P&amp;L comparison
+            shows up here.
+          </p>
+        ) : (
+          <div className="flex flex-wrap items-baseline gap-x-2">
+            <span
+              className="text-3xl font-semibold tabular-nums"
+              style={{ color: bl.vsSpy >= 0 ? "var(--sage)" : "var(--danger)" }}
+            >
+              {fmtPct(bl.vsSpy)}
+            </span>
+            <span className="text-sm muted">vs SPY{bl.vsSpy >= 0 ? " — ahead" : " — behind"}</span>
           </div>
         )}
+        <div className="mt-4 grid grid-cols-3 gap-3">
+          <Stat label="Claude" value={llm} color="var(--accent)" cap={bl.startingCapital} />
+          <Stat label="SPY" value={spy} color="var(--sky)" cap={bl.startingCapital} />
+          <Stat label="Naive basket" value={naive} color="var(--sage)" cap={bl.startingCapital} />
+        </div>
       </div>
 
-      {!s.hasData ? (
-        <div className="rounded-xl border border-dashed border-zinc-800 p-12 text-center text-sm text-zinc-500">
-          No performance history yet. Once Claude Code records fills and daily account snapshots through the Robinhood
-          MCP, the bot-vs-SPY chart and stats populate here.
+      {bl.hasData && (
+        <div className="card p-5">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide faint">
+            Three-way: same {fmtUsd(bl.startingCapital)} starting capital
+          </h2>
+          <BaselineChart series={bl.series} />
         </div>
-      ) : (
-        <>
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
-            <ScoreboardChart data={s.series} />
-          </div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <Stat label="Win rate" value={s.winRate == null ? "—" : `${(s.winRate * 100).toFixed(0)}%`} />
-            <Stat label="Avg hold" value={s.avgHoldDays == null ? "—" : `${s.avgHoldDays}d`} />
-            <Stat label="Max drawdown" value={s.maxDrawdownPct == null ? "—" : `${(s.maxDrawdownPct * 100).toFixed(1)}%`} />
-            <Stat label="Trades" value={String(s.tradeCount)} />
-          </div>
-        </>
       )}
     </div>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, color, cap }: { label: string; value: number | null; color: string; cap: number }) {
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-3 py-2.5">
-      <div className="text-[11px] text-zinc-500">{label}</div>
-      <div className="mt-0.5 text-lg font-semibold text-zinc-100">{value}</div>
+    <div>
+      <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide faint">
+        <span className="inline-block h-2 w-2 rounded-full" style={{ background: color }} /> {label}
+      </div>
+      <div className="mt-1 text-lg font-semibold tabular-nums">{value == null ? "—" : fmtPct(value)}</div>
+      <div className="text-xs faint">{value == null ? `from ${fmtUsd(cap)}` : ""}</div>
     </div>
   );
 }

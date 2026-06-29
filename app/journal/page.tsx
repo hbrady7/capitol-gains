@@ -1,48 +1,41 @@
-import { desc } from "drizzle-orm";
-import { db } from "@/lib/db";
-import { paperTrades, trades } from "@/lib/schema";
-import { JournalTable, type JournalRow } from "@/components/JournalTable";
+import { getRecentDecisions, getRecentFills } from "@/lib/dashboard-v2";
+import { JournalV2, type JournalDecision, type JournalFill } from "@/components/JournalV2";
 
 export const dynamic = "force-dynamic";
 
 export default async function JournalPage() {
-  let rows: JournalRow[] = [];
-  try {
-    const [paper, live] = await Promise.all([
-      db.select().from(paperTrades).orderBy(desc(paperTrades.ts)),
-      db.select().from(trades).orderBy(desc(trades.ts)),
-    ]);
-    rows = [
-      ...paper.map((r) => ({
-        kind: "paper" as const,
-        ticker: r.ticker,
-        side: r.side,
-        qty: r.qty,
-        price: r.simPrice,
-        status: "simulated",
-        ts: new Date(r.ts).toISOString(),
-      })),
-      ...live.map((r) => ({
-        kind: "live" as const,
-        ticker: r.ticker,
-        side: r.side,
-        qty: r.qty,
-        price: r.fillPrice,
-        status: r.status,
-        ts: new Date(r.ts).toISOString(),
-      })),
-    ].sort((a, b) => b.ts.localeCompare(a.ts));
-  } catch {
-    rows = [];
-  }
+  const [decisions, fills] = await Promise.all([getRecentDecisions(100), getRecentFills(100)]);
+
+  const decisionRows: JournalDecision[] = decisions.map((d) => ({
+    date: new Date(d.createdAt).toISOString().slice(0, 10),
+    action: d.action,
+    ticker: d.selectedTicker ?? "",
+    size: d.finalDollarSize ?? d.dollarSize ?? 0,
+    confidence: d.confidence,
+    outcome: d.guardrailOutcome,
+    reason: d.guardrailReason,
+    mode: d.mode,
+  }));
+  const fillRows: JournalFill[] = fills.map((f) => ({
+    date: new Date(f.ts).toISOString().slice(0, 10),
+    ticker: f.ticker,
+    side: f.side,
+    qty: Number(f.qty.toFixed(4)),
+    price: Number(f.price.toFixed(2)),
+    dollars: Number(f.dollars.toFixed(2)),
+    status: f.status,
+  }));
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="text-lg font-semibold tracking-tight">Trade journal</h1>
-        <p className="mt-1 text-sm text-zinc-500">Every recorded fill (paper + live). Filter and export to CSV for taxes and review.</p>
-      </div>
-      <JournalTable rows={rows} />
+    <div className="space-y-5">
+      <section>
+        <h1 className="text-xl font-semibold tracking-tight">Journal</h1>
+        <p className="mt-1 text-sm muted">
+          Every decision the brain made and every fill it recorded — including the holds and the orders the
+          safety layer trimmed or blocked. Export to CSV for review.
+        </p>
+      </section>
+      <JournalV2 decisions={decisionRows} fills={fillRows} />
     </div>
   );
 }

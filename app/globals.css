@@ -1,28 +1,134 @@
 @import "tailwindcss";
 
-:root {
-  --background: #09090b;
-  --foreground: #fafafa;
+/*
+ * capitol-gains v2 — warm, approachable, still polished. Warm-dark is the default;
+ * a light "cream" theme is available via the .light class on <html>. Soft neutrals,
+ * a friendly terracotta accent, a sage accent for the insider half, rounded cards,
+ * generous spacing. Geist stays.
+ */
+
+:root,
+.dark {
+  --bg: #14110d;
+  --bg-soft: #1b1711;
+  --card: #201b14;
+  --card-hover: #262017;
+  --border: #342b20;
+  --text: #f2ece1;
+  --muted: #a99a87;
+  --faint: #7c6f5e;
+  --accent: #e08a4c; /* terracotta / amber */
+  --accent-soft: #3a2a18;
+  --sage: #84b89a; /* insider half / positive */
+  --sage-soft: #21302a;
+  --sky: #7fb0d6; /* congress half */
+  --sky-soft: #1d2a33;
+  --danger: #df6f63;
+  --danger-soft: #371e1b;
+}
+
+.light {
+  --bg: #f6f0e4;
+  --bg-soft: #efe7d6;
+  --card: #fffdf8;
+  --card-hover: #fbf6ec;
+  --border: #e7dcc6;
+  --text: #2c2418;
+  --muted: #7b6f5c;
+  --faint: #a99c85;
+  --accent: #c6692a;
+  --accent-soft: #f6e4d2;
+  --sage: #4f8d6c;
+  --sage-soft: #e2efe6;
+  --sky: #3d7fad;
+  --sky-soft: #e0ecf4;
+  --danger: #c0493d;
+  --danger-soft: #f7e2de;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-bg: var(--bg);
+  --color-card: var(--card);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-sage: var(--sage);
+  --color-sky: var(--sky);
+  --color-danger: var(--danger);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
 html {
-  color-scheme: dark;
+  background: var(--bg);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--bg);
+  color: var(--text);
   font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #3f3f46 transparent;
+  scrollbar-color: var(--border) transparent;
+}
+
+/* ── component primitives ─────────────────────────────────────────────────── */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+}
+.card-hover:hover {
+  background: var(--card-hover);
+}
+.muted {
+  color: var(--muted);
+}
+.faint {
+  color: var(--faint);
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.btn {
+  border-radius: 0.7rem;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  transition: background 0.15s ease, border-color 0.15s ease;
+  cursor: pointer;
+}
+.btn:hover {
+  background: var(--card-hover);
+}
+.btn-accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a120a;
+}
+.btn-accent:hover {
+  filter: brightness(1.06);
+}
+.bar-track {
+  background: var(--bg-soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.link-accent {
+  color: var(--accent);
 }
