@@ -92,6 +92,7 @@ export async function runSync(): Promise<SyncResult> {
         rawUrl: r.rawUrl,
         histReturn: null,
         source: r.source,
+        kind: "congress",
         createdAt: new Date(),
       })
       .onConflictDoNothing({ target: signals.filingId })

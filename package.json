@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "sync": "tsx scripts/sync.ts",
+    "ingest": "tsx scripts/ingest.ts",
     "smoke": "tsx scripts/smoke.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
