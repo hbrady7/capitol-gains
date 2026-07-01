@@ -36,10 +36,43 @@ export async function getDeployedCost(cfg: Pick<RunConfig, "paperMode">): Promis
   return pos.reduce((s, p) => s + p.qty * p.avgPrice, 0);
 }
 
-/** Available cash = starting capital − cost basis deployed. Never negative. */
+/** Net buy/sell cash flow from the fills ledger: Σ sell dollars − Σ buy dollars.
+ *  With no sells this equals −Σ(buy cost) — identical to the old cost-basis model —
+ *  but once the exit desk sells, realized P&L flows back into cash correctly. */
+async function getNetCashFlow(cfg: Pick<RunConfig, "paperMode">): Promise<number> {
+  const account = accountFor(cfg);
+  try {
+    const [row] = await db
+      .select({
+        f: sql<number>`coalesce(sum(case when ${fills.side} = 'sell' then ${fills.dollars} else -${fills.dollars} end), 0)`,
+      })
+      .from(fills)
+      .where(eq(fills.account, account));
+    return Number(row?.f ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+/** Available cash = starting capital + net cash flow (sells add, buys subtract).
+ *  Never negative. This is the true cash-flow model, so realized gains are spendable. */
 export async function getAvailableCash(cfg: Pick<RunConfig, "paperMode">): Promise<number> {
-  const deployed = await getDeployedCost(cfg);
-  return Math.max(0, PAPER_STARTING_CAPITAL - deployed);
+  const flow = await getNetCashFlow(cfg);
+  return Math.max(0, PAPER_STARTING_CAPITAL + flow);
+}
+
+/** Cumulative realized P&L booked on sells (from the fills ledger). */
+export async function getRealizedPnl(cfg: Pick<RunConfig, "paperMode">): Promise<number> {
+  const account = accountFor(cfg);
+  try {
+    const [row] = await db
+      .select({ r: sql<number>`coalesce(sum(${fills.realizedPnl}), 0)` })
+      .from(fills)
+      .where(and(eq(fills.account, account), eq(fills.side, "sell")));
+    return Number(row?.r ?? 0);
+  } catch {
+    return 0;
+  }
 }
 
 /** Dollars filled (buys) since UTC midnight today — for the per-day cap. */
@@ -56,6 +89,35 @@ export async function getSpentToday(cfg: Pick<RunConfig, "paperMode">): Promise<
   } catch {
     return 0;
   }
+}
+
+/** Advance every open position's trailing high-water mark to the latest price.
+ *  Called by the marks step so the exit desk's trailing stop has fresh peaks.
+ *  Returns the marks it applied. Best-effort; never throws. */
+export async function markPositions(
+  cfg: Pick<RunConfig, "paperMode">,
+): Promise<{ ticker: string; last: number; peak: number }[]> {
+  const pos = await getOpenPositions(cfg);
+  if (pos.length === 0) return [];
+  const quotes = await getLastCloses(pos.map((p) => p.ticker));
+  const out: { ticker: string; last: number; peak: number }[] = [];
+  for (const p of pos) {
+    const last = quotes[p.ticker]?.price ?? p.avgPrice;
+    const prevPeak = p.peakPrice ?? p.avgPrice;
+    const peak = Math.max(prevPeak, last);
+    out.push({ ticker: p.ticker, last, peak });
+    if (peak > prevPeak) {
+      try {
+        await db
+          .update(positions)
+          .set({ peakPrice: peak, updatedAt: new Date() })
+          .where(eq(positions.id, p.id));
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+  return out;
 }
 
 /** Live-marked NAV of the book (cash + market value of positions). */

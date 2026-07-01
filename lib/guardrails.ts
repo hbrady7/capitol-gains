@@ -138,13 +138,14 @@ async function boughtWithinCooldown(cfg: RunConfig, ticker: string, days: number
   }
 }
 
-/** Most recent decision id that hasn't been executed yet (no guardrail outcome). */
+/** Most recent ENTRY (buy) decision that hasn't been executed yet. Exit decisions
+ *  are handled by their own desk (lib/exits.ts) and are excluded here. */
 export async function _latestUnexecutedDecision() {
   const { decisions } = await import("./schema");
   const [row] = await db
     .select()
     .from(decisions)
-    .where(sql`${decisions.guardrailOutcome} is null`)
+    .where(sql`${decisions.guardrailOutcome} is null and ${decisions.kind} = 'entry'`)
     .orderBy(desc(decisions.createdAt))
     .limit(1);
   return row ?? null;

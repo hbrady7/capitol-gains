@@ -54,7 +54,7 @@ export async function runExecute(): Promise<ExecuteResult> {
 
   // Place it.
   const adapter = makeAdapter(cfg);
-  const fill = await adapter.placeBuy(decision.selectedTicker, verdict.finalDollars, decision.id);
+  const fill = await adapter.placeBuy(decision.selectedTicker, verdict.finalDollars, decision.id, decision.thesis);
   await db
     .update(decisions)
     .set({

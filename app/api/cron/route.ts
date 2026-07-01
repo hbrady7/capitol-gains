@@ -14,6 +14,10 @@ import { runIngest } from "@/lib/ingest";
 import { runScore } from "@/lib/score-run";
 import { runDecide } from "@/lib/decide";
 import { runExecute } from "@/lib/execute";
+import { runExits } from "@/lib/exit-run";
+import { runAttribution } from "@/lib/attribution";
+import { runBaselines } from "@/lib/baselines";
+import { runBriefing } from "@/lib/briefing";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -34,12 +38,20 @@ export async function POST(req: Request) {
     const score = await runScore();
     const decide = await runDecide();
     const execute = await runExecute();
+    const exits = await runExits();
+    const attribution = await runAttribution();
+    const baselines = await runBaselines();
+    const briefing = await runBriefing();
     return NextResponse.json({
       ok: true,
-      ingest: { congress: ingest.congress.inserted, insider: ingest.insider.inserted },
+      ingest: { congress: ingest.congress.inserted, insider: ingest.insider.inserted, catalysts: ingest.catalysts.inserted },
       score: { candidates: score.candidates, top: score.topTicker },
       decide: { action: decide.decision.action, ticker: decide.decision.ticker },
       execute,
+      exits: { reviewed: exits.reviewed, actions: exits.actions.length },
+      attribution: { fills: attribution.processedFills, actors: attribution.actorsUpdated },
+      baselines: { llm: baselines.llm, spy: baselines.spy, naive: baselines.naive },
+      briefing: { date: briefing.date, headline: briefing.headline },
     });
   } catch (e) {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, { status: 500 });

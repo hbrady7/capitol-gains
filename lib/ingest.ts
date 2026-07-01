@@ -14,10 +14,12 @@ import { insiderFilings, meta, signals } from "./schema";
 import { getConfig } from "./settings";
 import { makeInsiderSource, type RawInsider } from "./insider";
 import { runSync, type SyncResult } from "./sync";
+import { runCatalysts, type CatalystIngestResult } from "./catalysts";
 
 export interface IngestResult {
   congress: SyncResult;
   insider: { source: string; fetched: number; inserted: number; skipped: number; error?: string };
+  catalysts: CatalystIngestResult;
   at: string;
 }
 
@@ -38,12 +40,15 @@ export async function runIngest(): Promise<IngestResult> {
   // 2. Insider (EDGAR Form 4, or seed offline / on failure).
   const insider = await ingestInsider(cfg.freshness.absurdStaleDays, cfg.source.provider);
 
+  // 3. Catalysts (free convergence corroborators/refuters — seed path today).
+  const catalysts = await runCatalysts(cfg.source.provider === "seed" ? "seed" : "seed");
+
   await db
     .insert(meta)
     .values({ key: "last_ingested", value: at, updatedAt: new Date() })
     .onConflictDoUpdate({ target: meta.key, set: { value: at, updatedAt: new Date() } });
 
-  return { congress, insider, at };
+  return { congress, insider, catalysts, at };
 }
 
 async function ingestInsider(absurdStaleDays: number, congressProvider: string) {
@@ -73,30 +78,35 @@ async function persistInsider(raw: RawInsider[], absurdStaleDays: number) {
       skipped++;
       continue;
     }
-    // Detailed insider row.
-    const a = await db
-      .insert(insiderFilings)
-      .values({
-        filingId: r.filingId,
-        issuer: r.issuer,
-        ticker: r.ticker,
-        insiderName: r.insiderName,
-        role: r.role,
-        transactionCode: r.transactionCode,
-        shares: r.shares,
-        price: r.price,
-        transactionDate: r.transactionDate,
-        filingDate: r.filingDate,
-        dollarValue: r.dollarValue,
-        daysStale,
-        rawUrl: r.rawUrl,
-        source: r.source,
-        createdAt: new Date(),
-      })
-      .onConflictDoNothing({ target: insiderFilings.filingId })
-      .returning({ id: insiderFilings.id });
+    // Detailed insider row — open-market PURCHASES only (the CCS buy signal). Sales
+    // are captured only as a normalized `signals` sell row for the exit desk.
+    if (r.side === "buy") {
+      const a = await db
+        .insert(insiderFilings)
+        .values({
+          filingId: r.filingId,
+          issuer: r.issuer,
+          ticker: r.ticker,
+          insiderName: r.insiderName,
+          role: r.role,
+          transactionCode: r.transactionCode,
+          shares: r.shares,
+          price: r.price,
+          transactionDate: r.transactionDate,
+          filingDate: r.filingDate,
+          dollarValue: r.dollarValue,
+          daysStale,
+          rawUrl: r.rawUrl,
+          source: r.source,
+          createdAt: new Date(),
+        })
+        .onConflictDoNothing({ target: insiderFilings.filingId })
+        .returning({ id: insiderFilings.id });
+      inserted += a.length;
+    }
 
-    // Normalized signal row (kind='insider') so both feeds share one shape.
+    // Normalized signal row (kind='insider'; side buy|sell) so both feeds share one
+    // shape. Sells feed thesis-invalidation in the exit desk; scoring ignores them.
     await db
       .insert(signals)
       .values({
@@ -105,7 +115,7 @@ async function persistInsider(raw: RawInsider[], absurdStaleDays: number) {
         party: null,
         chamber: null,
         ticker: r.ticker,
-        side: "buy",
+        side: r.side,
         amountLow: r.dollarValue,
         amountHigh: r.dollarValue,
         transactionDate: r.transactionDate,
@@ -118,8 +128,6 @@ async function persistInsider(raw: RawInsider[], absurdStaleDays: number) {
         createdAt: new Date(),
       })
       .onConflictDoNothing({ target: signals.filingId });
-
-    inserted += a.length;
   }
   return { fetched: raw.length, inserted, skipped };
 }

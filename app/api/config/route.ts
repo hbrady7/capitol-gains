@@ -16,8 +16,13 @@ const NUMERIC = new Set([
   "wIns",
   "kConverge",
   "minDollarVolume",
+  // exit desk
+  "trailingStopPct",
+  "hardStopPct",
+  "takeProfitPct",
+  "maxHoldDays",
 ]);
-const BOOL = new Set(["killSwitch", "paperMode"]);
+const BOOL = new Set(["killSwitch", "paperMode", "exitsEnabled", "confidenceSizing"]);
 
 export async function GET() {
   return NextResponse.json(await getRunConfig());

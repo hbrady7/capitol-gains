@@ -12,7 +12,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "./db";
 import { baselines, meta, scoredCandidates } from "./schema";
 import { accountFor, getRunConfig } from "./config";
-import { getNav, PAPER_STARTING_CAPITAL } from "./book";
+import { getNav, markPositions, PAPER_STARTING_CAPITAL } from "./book";
 import { getLastClose, getLastCloses } from "./quotes";
 
 export interface BaselinePoint {
@@ -76,6 +76,9 @@ export async function runBaselines(): Promise<BaselineSnapshotResult> {
   const cfg = await getRunConfig();
   const account = accountFor(cfg);
   const today = new Date().toISOString().slice(0, 10);
+
+  // Advance trailing high-water marks so the exit desk's stops stay current.
+  await markPositions(cfg);
 
   // (a) LLM portfolio NAV — live-marked book.
   const llm = await getNav(cfg);

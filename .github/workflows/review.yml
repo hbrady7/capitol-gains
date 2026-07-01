@@ -1,0 +1,30 @@
+name: self-review (weekly)
+
+# The reflective half of the learning loop: once a week the model grades its own
+# recent reasoning against what actually happened and writes what it would change.
+on:
+  schedule:
+    - cron: "0 14 * * 6" # ~14:00 UTC Saturdays (after the week's trading)
+  workflow_dispatch: {}
+
+concurrency:
+  group: brain
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      QUOTE_SOURCE_URL: ${{ secrets.QUOTE_SOURCE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+      - run: npm ci
+      - name: self-review (Claude grades its own week)
+        run: npm run review

@@ -176,14 +176,28 @@ export function rankMemberQuality(congBuys: CongBuy[]): Map<string, MemberQualit
   return out;
 }
 
+/** Learned per-actor quality in [0,1] (0.5 neutral), from post-trade attribution.
+ *  Absent actors default to neutral. Used to TILT the CCS toward actors whose past
+ *  buying actually preceded gains and away from those it didn't. */
+export interface LearnedQuality {
+  congress: Record<string, number>;
+  insider: Record<string, number>;
+}
+
+/** Neutral tilt factor for an actor: learned 0.5 → 1.0×; 0 → 0.5×; 1 → 1.5×. */
+const learnedFactor = (learned: number | undefined) =>
+  learned == null ? 1 : 0.5 + Math.max(0, Math.min(1, learned));
+
 // ── the scorer ────────────────────────────────────────────────────────────────
 export function scoreCandidates(input: {
   congBuys: CongBuy[];
   insBuys: InsBuy[];
   cfg: ScoringCfg;
   today: string; // ISO yyyy-mm-dd
+  learned?: LearnedQuality;
 }): Candidate[] {
   const { cfg, today } = input;
+  const learned: LearnedQuality = input.learned ?? { congress: {}, insider: {} };
 
   // Window + freshness: keep buys disclosed within lookback AND whose TRANSACTION
   // date is within freshnessCutoffDays (combats the STOCK Act disclosure lag).
@@ -230,8 +244,9 @@ export function scoreCandidates(input: {
       const conv = dollarConviction(mid(b.amountLow, b.amountHigh));
       const rec = expDecay(daysAgo(b.disclosureDate, today), 30);
       const edge = hasCommitteeEdge(b.member, ticker);
-      qualitySum += q.percentile * rec;
-      convictionSum += conv * rec;
+      const lf = learnedFactor(learned.congress[b.member]); // post-trade attribution tilt
+      qualitySum += q.percentile * rec * lf;
+      convictionSum += conv * rec * lf;
       recencySum += rec;
       congTotalUsd += mid(b.amountLow, b.amountHigh);
       if (edge) {
@@ -266,8 +281,9 @@ export function scoreCandidates(input: {
       const rec = expDecay(daysAgo(b.filingDate, today), 21);
       // bonus if the buy is large for the role (officers/dirs writing a big check).
       const sizeBonus = b.dollarValue > 250_000 ? 0.2 : 0;
-      roleSum += rw * rec;
-      sizeSum += size * rec * (1 + sizeBonus);
+      const lf = learnedFactor(learned.insider[b.insiderName]); // post-trade attribution tilt
+      roleSum += rw * rec * lf;
+      sizeSum += size * rec * (1 + sizeBonus) * lf;
       insRecencySum += rec;
       insTotalUsd += b.dollarValue;
       insEvidence.push({

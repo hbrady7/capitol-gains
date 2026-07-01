@@ -8,6 +8,7 @@ import { db } from "./db";
 import { insiderFilings, scoredCandidates, signals } from "./schema";
 import { getRunConfig } from "./config";
 import { scoreCandidates, type CongBuy, type InsBuy } from "./scoring";
+import { getLearnedQuality } from "./attribution";
 import type { InsiderRoleValue } from "./roles";
 
 export interface ScoreRunResult {
@@ -61,6 +62,7 @@ export async function runScore(): Promise<ScoreRunResult> {
     daysStale: r.daysStale,
   }));
 
+  const learned = await getLearnedQuality(); // post-trade attribution tilt (neutral if none)
   const candidates = scoreCandidates({
     congBuys,
     insBuys,
@@ -73,6 +75,7 @@ export async function runScore(): Promise<ScoreRunResult> {
       minDollarVolume: cfg.minDollarVolume,
     },
     today,
+    learned,
   });
 
   // Persist.

@@ -34,5 +34,11 @@ jobs:
       - run: npm ci
       - name: execute (compliance desk + place)
         run: npm run execute
+      - name: exits (protective stops + LLM thesis exits)
+        run: npm run exits
+      - name: attribute (learning loop — closed trades → actor quality)
+        run: npm run attribute
       - name: snapshot baselines (LLM / SPY / naive)
         run: npm run baselines
+      - name: morning briefing (LLM-narrated digest)
+        run: npm run brief

@@ -21,7 +21,8 @@ export interface RawInsider {
   ticker: string;
   insiderName: string;
   role: InsiderRoleValue;
-  transactionCode: string; // always 'P' here
+  transactionCode: string; // 'P' (open-market buy) or 'S' (open-market sale)
+  side: "buy" | "sell"; // P→buy, S→sell
   shares: number;
   price: number | null;
   transactionDate: string; // ISO yyyy-mm-dd
@@ -119,14 +120,15 @@ export class EdgarInsiderSource implements InsiderSource {
     const body = await res.text();
     const xml = between(body, "<ownershipDocument>", "</ownershipDocument>");
     if (!xml) return [];
-    return parseForm4(xml, { rawUrl: url, filingDate, accession: file });
+    // Keep buys (the CCS signal) AND sells (a thesis-invalidation signal for exits).
+    return parseForm4(xml, { rawUrl: url, filingDate, accession: file, includeSells: true });
   }
 }
 
 // ── Form 4 XML parsing (regex; no XML dep) ───────────────────────────────────
 export function parseForm4(
   xml: string,
-  ctx: { rawUrl: string | null; filingDate: string; accession: string },
+  ctx: { rawUrl: string | null; filingDate: string; accession: string; includeSells?: boolean },
 ): RawInsider[] {
   const issuer = tag(xml, "issuerName") ?? "Unknown";
   const ticker = (tag(xml, "issuerTradingSymbol") ?? "").trim().toUpperCase();
@@ -146,7 +148,11 @@ export function parseForm4(
   for (const b of blocks) {
     const code = (valueTag(b, "transactionCode") ?? "").trim().toUpperCase();
     const ad = (valueTag(b, "transactionAcquiredDisposedCode") ?? "").trim().toUpperCase();
-    if (code !== "P" || ad !== "A") continue; // open-market purchase only
+    // Open-market purchase (P/A) is the CCS signal; open-market sale (S/D) is a
+    // thesis-invalidation signal for the exit desk. Grants/exercises (A/M) dropped.
+    const isBuy = code === "P" && ad === "A";
+    const isSell = code === "S" && ad === "D";
+    if (!isBuy && !(isSell && ctx.includeSells)) continue;
     const shares = num(valueTag(b, "transactionShares"));
     const price = num(valueTag(b, "transactionPricePerShare"));
     const txDate = isoOrNull(valueTag(b, "transactionDate") ?? "");
@@ -157,7 +163,8 @@ export function parseForm4(
       ticker,
       insiderName,
       role,
-      transactionCode: "P",
+      transactionCode: isBuy ? "P" : "S",
+      side: isBuy ? "buy" : "sell",
       shares,
       price,
       transactionDate: txDate,
@@ -230,6 +237,7 @@ export class SeedInsiderSource implements InsiderSource {
         insiderName: ins.name,
         role: ins.role,
         transactionCode: "P",
+        side: "buy",
         shares,
         price,
         transactionDate: txIso,

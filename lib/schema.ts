@@ -205,16 +205,22 @@ export const scoredCandidates = pgTable(
   ],
 );
 
-/** The LLM portfolio manager's decision per run + the full reasoning trace. */
+/** The LLM portfolio manager's decision per run + the full reasoning trace.
+ *  `kind` splits the two brains: 'entry' (buy proposals) and 'exit' (sell proposals).
+ *  Both share this table so the journal is one unified reasoning stream. */
 export const decisions = pgTable(
   "decisions",
   {
     id: serial("id").primaryKey(),
     runId: text("run_id").notNull(),
+    kind: text("kind").notNull().default("entry"), // 'entry' (buy) | 'exit' (sell)
     selectedTicker: text("selected_ticker"), // null on a hold
-    action: text("action").notNull(), // 'buy' | 'hold'
+    action: text("action").notNull(), // 'buy' | 'sell' | 'hold'
     dollarSize: doublePrecision("dollar_size").notNull().default(0),
+    sellQty: doublePrecision("sell_qty"), // shares to sell (exit decisions only)
+    sellFraction: doublePrecision("sell_fraction"), // 0–1 of the position (exit only)
     confidence: doublePrecision("confidence"), // 0–1
+    exitTriggers: jsonb("exit_triggers"), // deterministic triggers that prompted the exit review
     thesis: text("thesis"),
     risks: text("risks"),
     reasoning: text("reasoning"), // the full chain of thought, verbatim
@@ -223,12 +229,19 @@ export const decisions = pgTable(
     guardrailOutcome: text("guardrail_outcome"), // placed | trimmed | blocked
     guardrailReason: text("guardrail_reason"),
     finalDollarSize: doublePrecision("final_dollar_size"), // after compliance trim
+    realizedPnl: doublePrecision("realized_pnl"), // realized P&L on a closed/sold lot
     createdAt: timestamp("created_at", { mode: "date" }).notNull(),
   },
-  (t) => [index("decisions_run_idx").on(t.runId), index("decisions_created_idx").on(t.createdAt)],
+  (t) => [
+    index("decisions_run_idx").on(t.runId),
+    index("decisions_created_idx").on(t.createdAt),
+    index("decisions_kind_idx").on(t.kind),
+  ],
 );
 
-/** Open positions (paper or live), maintained by the execution adapter. */
+/** Open positions (paper or live), maintained by the execution adapter.
+ *  `peakPrice` is the trailing high-water mark since entry — the marks step
+ *  advances it each run so the exit desk can enforce a trailing stop. */
 export const positions = pgTable(
   "positions",
   {
@@ -237,13 +250,16 @@ export const positions = pgTable(
     ticker: text("ticker").notNull(),
     qty: doublePrecision("qty").notNull(),
     avgPrice: doublePrecision("avg_price").notNull(),
+    peakPrice: doublePrecision("peak_price"), // trailing high-water since entry
+    thesis: text("thesis"), // entry thesis, carried for exit review
     openedAt: timestamp("opened_at", { mode: "date" }).notNull(),
     updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
   },
   (t) => [uniqueIndex("positions_acct_ticker_uq").on(t.account, t.ticker)],
 );
 
-/** Every fill the executor records (paper sim or live), tied to a decision. */
+/** Every fill the executor records (paper sim or live), tied to a decision.
+ *  `realizedPnl` is set on sells: proceeds − (qtySold × avgCost) at sale time. */
 export const fills = pgTable(
   "fills",
   {
@@ -255,6 +271,7 @@ export const fills = pgTable(
     qty: doublePrecision("qty").notNull(),
     price: doublePrecision("price").notNull(),
     dollars: doublePrecision("dollars").notNull(),
+    realizedPnl: doublePrecision("realized_pnl"), // sells only
     orderId: text("order_id"),
     status: text("status").notNull().default("filled"), // filled | partial | canceled | simulated
     ts: timestamp("ts", { mode: "date" }).notNull(),
@@ -275,6 +292,13 @@ export const config = pgTable("config", {
   freshnessCutoffDays: integer("freshness_cutoff_days").notNull().default(21),
   cooldownDays: integer("cooldown_days").notNull().default(30),
   cronCadence: text("cron_cadence").notNull().default("daily"),
+  // Exit desk (Phase v3) — protective stops are deterministic; thesis exits are LLM-reasoned.
+  exitsEnabled: boolean("exits_enabled").notNull().default(true),
+  trailingStopPct: doublePrecision("trailing_stop_pct").notNull().default(20), // sell if down this % from peak
+  hardStopPct: doublePrecision("hard_stop_pct").notNull().default(25), // sell if down this % from cost
+  takeProfitPct: doublePrecision("take_profit_pct").notNull().default(0), // 0 = disabled
+  maxHoldDays: integer("max_hold_days").notNull().default(90), // time-decay exit
+  confidenceSizing: boolean("confidence_sizing").notNull().default(true), // scale buys by conviction
   // CCS tunables (Phase 4).
   lookbackDays: integer("lookback_days").notNull().default(45),
   wCong: doublePrecision("w_cong").notNull().default(1),
@@ -296,4 +320,87 @@ export const baselines = pgTable(
     naiveNav: doublePrecision("naive_nav").notNull(),
   },
   (t) => [uniqueIndex("baselines_date_acct_uq").on(t.date, t.account)],
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v3 (Learning loop + exits + briefing + catalysts)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Post-trade attribution: a learned quality score per informed actor (a member of
+ *  Congress or a corporate insider) built from the realized outcomes of the closed
+ *  positions their buying contributed to. This sharpens the CCS over time — the
+ *  scorer blends this learned prior with the naive trailing-return proxy. */
+export const actorQuality = pgTable(
+  "actor_quality",
+  {
+    id: serial("id").primaryKey(),
+    actor: text("actor").notNull(), // member or insider name
+    kind: signalKind("kind").notNull(), // congress | insider
+    closedTrades: integer("closed_trades").notNull().default(0),
+    wins: integer("wins").notNull().default(0),
+    sumReturn: doublePrecision("sum_return").notNull().default(0), // Σ realized return contributions
+    // Shrunk, learned quality in ~[0,1] (Bayesian toward the neutral prior 0.5).
+    quality: doublePrecision("quality").notNull().default(0.5),
+    lastOutcomeAt: timestamp("last_outcome_at", { mode: "date" }),
+    updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
+  },
+  (t) => [uniqueIndex("actor_quality_uq").on(t.actor, t.kind)],
+);
+
+/** The model's weekly self-review: it reads its own recent reasoning traces against
+ *  what actually happened and writes an honest critique + what it would change. */
+export const selfReviews = pgTable("self_reviews", {
+  id: serial("id").primaryKey(),
+  account: text("account").notNull().default("paper"),
+  periodStart: text("period_start").notNull(), // ISO date
+  periodEnd: text("period_end").notNull(),
+  grade: text("grade"), // model's self-assigned grade, e.g. B-
+  summary: text("summary"), // one-paragraph verdict
+  critique: text("critique"), // full self-critique
+  changes: jsonb("changes"), // structured "what I'd change" list
+  stats: jsonb("stats"), // the outcome numbers it was shown
+  model: text("model"),
+  createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+});
+
+/** The morning briefing — a pleasant daily digest of what the brain saw, did, and
+ *  why, plus portfolio state vs SPY. Narrated by the model, stored for the reader. */
+export const briefings = pgTable(
+  "briefings",
+  {
+    id: serial("id").primaryKey(),
+    date: text("date").notNull(),
+    account: text("account").notNull().default("paper"),
+    headline: text("headline"),
+    markdown: text("markdown").notNull(),
+    stats: jsonb("stats"), // the numbers behind the prose
+    model: text("model"),
+    createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  },
+  (t) => [uniqueIndex("briefing_date_acct_uq").on(t.date, t.account)],
+);
+
+/** Catalyst layer — free public convergence corroborators/refuters (government
+ *  contract awards, lobbying spikes, committee calendar hearings). Each row lifts
+ *  or dampens a ticker's thesis and is surfaced to the decision brain as evidence. */
+export const catalysts = pgTable(
+  "catalysts",
+  {
+    id: serial("id").primaryKey(),
+    catalystId: text("catalyst_id").notNull(), // dedupe key
+    ticker: text("ticker").notNull(),
+    kind: text("kind").notNull(), // 'contract' | 'lobbying' | 'hearing'
+    direction: text("direction").notNull().default("support"), // support | refute
+    weight: doublePrecision("weight").notNull().default(0), // 0..1 magnitude
+    headline: text("headline").notNull(),
+    date: text("date").notNull(), // ISO yyyy-mm-dd
+    rawUrl: text("raw_url"),
+    source: text("source").notNull(),
+    createdAt: timestamp("created_at", { mode: "date" }).notNull(),
+  },
+  (t) => [
+    uniqueIndex("catalyst_uq").on(t.catalystId),
+    index("catalyst_ticker_idx").on(t.ticker),
+    index("catalyst_date_idx").on(t.date),
+  ],
 );

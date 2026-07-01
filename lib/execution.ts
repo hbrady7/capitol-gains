@@ -27,40 +27,64 @@ export interface Fill {
   dollars: number;
   orderId: string | null;
   status: "filled" | "partial" | "simulated";
+  realizedPnl?: number | null; // sells only
 }
 
 export interface ExecutionAdapter {
   readonly name: string;
-  placeBuy(ticker: string, dollars: number, decisionId: number | null): Promise<Fill>;
+  placeBuy(ticker: string, dollars: number, decisionId: number | null, thesis?: string | null): Promise<Fill>;
+  /** Sell `qty` shares of a held name (long-only: qty is clamped to the position). */
+  placeSell(ticker: string, qty: number, decisionId: number | null): Promise<Fill>;
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-async function recordFill(account: string, decisionId: number | null, f: Fill): Promise<void> {
-  await db.insert(fills).values({
-    decisionId: decisionId ?? null,
-    account,
-    ticker: f.ticker,
-    side: f.side,
-    qty: f.qty,
-    price: f.price,
-    dollars: f.dollars,
-    orderId: f.orderId,
-    status: f.status,
-    ts: new Date(),
-  });
-  // Upsert the position (average up on adds).
+async function recordFill(
+  account: string,
+  decisionId: number | null,
+  f: Fill,
+  thesis?: string | null,
+): Promise<Fill> {
+  // Read the position first — needed to book realized P&L and to enforce long-only.
   const [existing] = await db
     .select()
     .from(positions)
     .where(and(eq(positions.account, account), eq(positions.ticker, f.ticker)))
     .limit(1);
-  const signed = f.side === "buy" ? f.qty : -f.qty;
+
+  // Long-only backstop: never sell more than held; never drive a position negative.
+  let qty = f.qty;
+  let realizedPnl: number | null = f.realizedPnl ?? null;
+  if (f.side === "sell") {
+    const held = existing?.qty ?? 0;
+    qty = Math.min(qty, held);
+    if (qty <= 0) throw new Error(`cannot sell ${f.ticker}: not held (long-only)`);
+    realizedPnl = Number(((f.price - (existing?.avgPrice ?? f.price)) * qty).toFixed(2));
+  }
+  const dollars = Number((qty * f.price).toFixed(2));
+
+  await db.insert(fills).values({
+    decisionId: decisionId ?? null,
+    account,
+    ticker: f.ticker,
+    side: f.side,
+    qty,
+    price: f.price,
+    dollars,
+    realizedPnl,
+    orderId: f.orderId,
+    status: f.status,
+    ts: new Date(),
+  });
+
+  const signed = f.side === "buy" ? qty : -qty;
   if (!existing) {
     await db.insert(positions).values({
       account,
       ticker: f.ticker,
       qty: signed,
       avgPrice: f.price,
+      peakPrice: f.price,
+      thesis: thesis ?? null,
       openedAt: new Date(),
       updatedAt: new Date(),
     });
@@ -68,20 +92,28 @@ async function recordFill(account: string, decisionId: number | null, f: Fill): 
     const newQty = existing.qty + signed;
     const newAvg =
       f.side === "buy" && newQty > 0
-        ? (existing.qty * existing.avgPrice + f.qty * f.price) / newQty
+        ? (existing.qty * existing.avgPrice + qty * f.price) / newQty
         : existing.avgPrice;
+    const newPeak =
+      f.side === "buy" ? Math.max(existing.peakPrice ?? existing.avgPrice, f.price) : existing.peakPrice;
     await db
       .update(positions)
-      .set({ qty: newQty, avgPrice: newAvg, updatedAt: new Date() })
+      .set({
+        qty: newQty <= 0.000001 ? 0 : newQty,
+        avgPrice: newAvg,
+        peakPrice: newPeak,
+        updatedAt: new Date(),
+      })
       .where(eq(positions.id, existing.id));
   }
+  return { ...f, qty, dollars, realizedPnl };
 }
 
 // ── PaperAdapter (default) ────────────────────────────────────────────────────
 export class PaperAdapter implements ExecutionAdapter {
   readonly name = "paper";
   constructor(private account = "paper") {}
-  async placeBuy(ticker: string, dollars: number, decisionId: number | null): Promise<Fill> {
+  async placeBuy(ticker: string, dollars: number, decisionId: number | null, thesis?: string | null): Promise<Fill> {
     const { price } = await getLastClose(ticker);
     const qty = price > 0 ? Number((dollars / price).toFixed(4)) : 0;
     const fill: Fill = {
@@ -93,15 +125,27 @@ export class PaperAdapter implements ExecutionAdapter {
       orderId: `paper-${decisionId ?? "x"}-${ticker}`,
       status: "simulated",
     };
-    await recordFill(this.account, decisionId, fill);
-    return fill;
+    return recordFill(this.account, decisionId, fill, thesis);
+  }
+  async placeSell(ticker: string, qty: number, decisionId: number | null): Promise<Fill> {
+    const { price } = await getLastClose(ticker);
+    const fill: Fill = {
+      ticker,
+      side: "sell",
+      qty: Number(qty.toFixed(4)),
+      price,
+      dollars: Number((qty * price).toFixed(2)),
+      orderId: `paper-sell-${decisionId ?? "x"}-${ticker}`,
+      status: "simulated",
+    };
+    return recordFill(this.account, decisionId, fill);
   }
 }
 
 // ── RobinhoodAgenticAdapter (live, gated) ─────────────────────────────────────
 export class RobinhoodAgenticAdapter implements ExecutionAdapter {
   readonly name = "robinhood-agentic";
-  async placeBuy(): Promise<Fill> {
+  private gate(): never {
     // Robinhood's agentic MCP trading endpoint (https://agent.robinhood.com/mcp/trading)
     // is designed for the consumer Claude-app pairing. A headless, server-to-server
     // connection from a cron job is NOT confirmed to be supported. Until that is
@@ -114,6 +158,12 @@ export class RobinhoodAgenticAdapter implements ExecutionAdapter {
       );
     }
     throw new Error("RobinhoodAgenticAdapter: wire up the Anthropic MCP connector before going live.");
+  }
+  async placeBuy(): Promise<Fill> {
+    this.gate();
+  }
+  async placeSell(): Promise<Fill> {
+    this.gate();
   }
 }
 
@@ -164,8 +214,44 @@ export class AlpacaAdapter implements ExecutionAdapter {
       orderId: order.id ?? null,
       status: qty > 0 ? "filled" : "partial",
     };
-    await recordFill(this.account, decisionId, fill);
-    return fill;
+    return recordFill(this.account, decisionId, fill);
+  }
+  async placeSell(ticker: string, qty: number, decisionId: number | null): Promise<Fill> {
+    const key = process.env.ALPACA_API_KEY;
+    const secret = process.env.ALPACA_API_SECRET;
+    if (!key || !secret) throw new Error("AlpacaAdapter needs ALPACA_API_KEY and ALPACA_API_SECRET.");
+    const { price } = await getLastClose(ticker);
+    // Limit-only, day, long-only sell of a fractional share quantity.
+    const res = await fetch(`${this.base}/v2/orders`, {
+      method: "POST",
+      headers: {
+        "APCA-API-KEY-ID": key,
+        "APCA-API-SECRET-KEY": secret,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        symbol: ticker,
+        qty: Number(qty.toFixed(4)),
+        side: "sell",
+        type: "limit",
+        limit_price: Number((price * 0.995).toFixed(2)),
+        time_in_force: "day",
+      }),
+    });
+    if (!res.ok) throw new Error(`Alpaca sell failed: HTTP ${res.status} ${await res.text()}`);
+    const order = (await res.json()) as { id?: string; filled_avg_price?: string; filled_qty?: string };
+    const fillPrice = Number(order.filled_avg_price ?? price);
+    const filledQty = Number(order.filled_qty ?? qty);
+    const fill: Fill = {
+      ticker,
+      side: "sell",
+      qty: Number(filledQty.toFixed(4)),
+      price: fillPrice,
+      dollars: Number((filledQty * fillPrice).toFixed(2)),
+      orderId: order.id ?? null,
+      status: filledQty > 0 ? "filled" : "partial",
+    };
+    return recordFill(this.account, decisionId, fill);
   }
 }
 
