@@ -62,6 +62,38 @@ good bones (signal cards, freshness/liquidity badges, SPY scoreboard, journal + 
 ### Phase 9 — Experiment harness
 - Snapshot 3 NAVs into `baselines` (LLM / SPY / naive top-tercile equal-weight). Three-way chart. Update README + CLAUDE.md. Final run/env instructions.
 
+## v3 additions (exit desk + learning loop + catalysts + briefing + backtest)
+
+Layered on top of v2 without touching the buy-side safety model. Run `npm run
+db:push` once to apply the additive schema changes.
+
+- **Schema:** `decisions` gains `kind` (`entry|exit`), `sell_qty`, `sell_fraction`,
+  `exit_triggers` (jsonb), `realized_pnl`. `fills` gains `realized_pnl`. `positions`
+  gains `peak_price` (trailing high-water) + `thesis`. `config` gains
+  `exits_enabled`, `trailing_stop_pct`, `hard_stop_pct`, `take_profit_pct`,
+  `max_hold_days`, `confidence_sizing`. New tables: `actor_quality`, `self_reviews`,
+  `briefings`, `catalysts`. Migration in `drizzle/0001_*.sql`.
+- **Cash model:** `getAvailableCash` is now fill-based (`start + Σsells − Σbuys`) so
+  realized gains are spendable; identical to the old cost-basis model when there are
+  no sells.
+- **Exit desk:** `lib/exits.ts` (pure signals), `lib/exit-run.ts` (orchestration +
+  LLM discretionary brain), `lib/exit-guardrails.ts` (`checkSell` — halt/trim,
+  long-only). `ExecutionAdapter` gained `placeSell`. `npm run exits`.
+- **Learning loop:** `lib/attribution.ts` (closed-trade → `actor_quality`, tilts the
+  scorer via `scoreCandidates({ learned })`) and `lib/self-review.ts` (weekly). `npm
+  run attribute` / `npm run review` + `.github/workflows/review.yml`.
+- **Catalysts:** `lib/catalysts.ts` — `CatalystSource` interface (mirrors
+  `DataSource`); `SeedCatalystSource` ships. Drop in real adapters later:
+  **USASpending** (contract awards), **Senate LDA** (lobbying), **congress.gov**
+  (committee calendars). Insider **sells** (Form 4 code `S`) are now ingested as
+  `signals(kind='insider', side='sell')` for thesis-invalidation — scoring still
+  reads only buys from `insider_filings`.
+- **Briefing:** `lib/briefing.ts` — stored LLM digest + deterministic fallback. `npm
+  run brief`.
+- **Backtest:** `lib/backtest.ts` — pure, DB-free replay reusing `scoreCandidates` +
+  `computeExitSignals`; `makeSyntheticWorld` stands in until real historical rows are
+  wired. `npm run backtest`.
+
 ## Architecture invariant (safety)
 The **LLM is the portfolio manager** (picks ticker + size + rationale). A thin
 **deterministic compliance desk** (`sizeAndCheck`) can only **halt or trim**, never

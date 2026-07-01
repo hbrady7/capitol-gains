@@ -5,12 +5,15 @@ U.S. politicians and corporate insiders are buying the same stock at the same ti
 beat the market, and beat a dumb mechanical version of the same signal?**
 
 The brain runs **autonomously** on a GitHub Actions cron: **ingest → score → decide →
-execute**. Claude (Opus 4.8 + extended thinking, via the Anthropic API) is the
-portfolio manager — it picks the single best name, sizes it, and writes the
-rationale. A thin deterministic **compliance desk** sits between the model and the
-broker; it can only **halt or trim** an order, never originate one. A read-only
-**Vercel dashboard** (on Neon Postgres) shows the reasoning, the decomposed score,
-the portfolio, and a three-way scoreboard.
+execute → exit → learn → brief**. Claude (Opus 4.8 + extended thinking, via the
+Anthropic API) is the portfolio manager — it picks the single best name, sizes it by
+conviction, writes the rationale, and now also decides when to **sell**. A thin
+deterministic **compliance desk** sits between the model and the broker on both the
+buy and the sell side; it can only **halt or trim** an order, never originate or
+upsize one. Every closed trade feeds a **learning loop** that sharpens the score, and
+the model writes itself a weekly report card. A read-only **Vercel dashboard** (on
+Neon Postgres) shows the reasoning, the decomposed score, the portfolio, a three-way
+scoreboard, a morning briefing, and the learning loop.
 
 > **Paper mode is the default — nothing real is placed.** Live is flipped by a human
 > in the dashboard Controls, never in code and never by the model. The signal is
@@ -19,15 +22,24 @@ the portfolio, and a three-way scoreboard.
 ## How it works
 
 ```
-ingest ─ congress feed (stock-watcher) + SEC EDGAR Form 4 (open-market buys, code P)
-  │        → signals (congress|insider) + insider_filings
+ingest ─ congress feed (stock-watcher) + SEC EDGAR Form 4 (buys code P, sells code S)
+  │        + catalysts (gov contracts / lobbying / hearings)
+  │        → signals (congress|insider, buy|sell) + insider_filings + catalysts
 score  ─ Convergence Conviction Score (CCS): per-ticker congressional + insider
-  │        sub-scores, super-additive convergence multiplier, liquidity gate
+  │        sub-scores, super-additive convergence multiplier, liquidity gate,
+  │        TILTED by learned per-actor quality from past outcomes
   │        → scored_candidates (every sub-score + evidence stored)
-decide ─ Claude Opus 4.8 + extended thinking picks ONE buy (or holds)
-  │        → decisions (full reasoning trace, confidence, thesis, risks)
+decide ─ Claude Opus 4.8 + extended thinking picks ONE buy (or holds), sized by
+  │        conviction; catalysts surfaced as fenced evidence
+  │        → decisions (kind=entry; full reasoning trace, confidence, thesis, risks)
 execute─ compliance desk (block/trim only) → ExecutionAdapter.placeBuy
-           → fills + positions, guardrail outcome recorded on the decision
+  │        → fills + positions, guardrail outcome recorded on the decision
+exit   ─ exit desk: deterministic protective stops (trailing/hard/time) +
+  │        LLM thesis-invalidation exits; sell-compliance (halt/trim, long-only)
+  │        → ExecutionAdapter.placeSell, realized P&L booked (kind=exit decision)
+learn  ─ attribution folds closed-trade outcomes into actor_quality (sharpens CCS);
+  │        weekly self-review: the model grades its own reasoning vs what happened
+brief  ─ a warm, LLM-narrated morning digest (what it saw/did/why, book vs SPY)
 ```
 
 **The CCS** is the distinctive core. For each ticker over a lookback window:
@@ -43,6 +55,42 @@ execute─ compliance desk (block/trim only) → ExecutionAdapter.placeBuy
   multiplier only rewards genuine overlap, so a name with both populations buying
   ranks far above a name with either alone.
 
+## What the brain can do (v3)
+
+- **Exit intelligence.** The system finally *sells*. Deterministic **protective
+  stops** — trailing (from a per-position high-water mark), hard (from cost),
+  optional take-profit, and time-decay — fire by rule and exit the whole position,
+  like the drawdown breaker. **Discretionary exits** are LLM-reasoned: when a name
+  falls off the fresh convergence list, the politicians/insiders who bought start
+  **selling** (Form 4 code `S` is now ingested too), or a catalyst refutes the
+  thesis, Claude decides how much to trim. A **sell-compliance desk** mirrors the buy
+  side — it can only halt or trim, is long-only (never sells more than held, never
+  shorts), and honors the kill switch. Realized P&L flows back into spendable cash.
+- **A learning loop.** Every closed trade is attributed back to the members and
+  insiders whose buying put the name on the list; each accumulates a Bayesian quality
+  score that **tilts the CCS** toward actors whose buying actually preceded gains
+  (bounded, never fabricating a candidate). A **weekly self-review** has the model
+  grade its own recent reasoning against what happened and write what it would change.
+- **Confidence-weighted sizing.** Higher conviction sizes closer to the per-position
+  cap, lower conviction takes a small probe — always *under* the cap. A deterministic
+  clamp only ever trims the proposal down; the compliance desk still never upsizes.
+- **Richer signal (catalysts).** Free public corroborators/refuters — government
+  contract awards, lobbying spikes, committee hearings — are surfaced to the decision
+  brain as fenced evidence (data, never instructions). Pluggable sources; a
+  deterministic seed source ships so it works offline.
+- **A morning briefing.** A genuinely pleasant, LLM-narrated daily digest (what it
+  saw, what it did and why, the book vs SPY) — grounded in the numbers, with a
+  deterministic fallback, stored and rendered on the dashboard.
+- **Replay / backtest.** `npm run backtest` replays a disclosure history through the
+  **exact same** pure scorer and exit engine as the live loop, reporting strategy vs
+  SPY vs naive with drawdown and win-rate — so a strategy tweak is measured before it
+  touches the live loop.
+
+None of this weakens the safety model: paper stays default-on and human-flipped, the
+kill switch / caps / drawdown halt / dedup stay enforced, compliance can still only
+halt or trim on both sides, and no new brokerage credentials or live endpoints were
+added.
+
 ## Run it
 
 ```bash
@@ -52,26 +100,38 @@ npm run db:push               # create the schema on Neon
 npm run dev                   # dashboard at http://localhost:3000
 
 # the pipeline (each is an npm script run via tsx)
-npm run ingest                # congress + EDGAR Form 4 → DB
-npm run score                 # compute the CCS → scored_candidates
-npm run decide                # Claude Opus 4.8 picks one buy or holds
-npm run execute               # compliance desk → place (paper by default)
+npm run ingest                # congress + EDGAR Form 4 (+ sells) + catalysts → DB
+npm run score                 # compute the CCS (attribution-tilted) → scored_candidates
+npm run decide                # Claude Opus 4.8 picks one buy or holds, sized by conviction
+npm run execute               # buy compliance desk → place (paper by default)
+npm run exits                 # sell side: protective stops + LLM thesis exits
+npm run attribute             # learning loop: closed trades → actor quality
 npm run baselines             # snapshot LLM / SPY / naive NAV for the scoreboard
-npm run brain                 # all of the above in one process
+npm run brief                 # write today's morning briefing
+npm run review                # weekly self-review (model grades its own reasoning)
+npm run brain                 # the whole loop in one process
 
+npm run backtest              # replay the strategy over history (offline, no DB)
+npm run backtest -- --k=2 --trail=15 --hard=20 --hold=60 --days=180   # tune & measure
 npm run smoke                 # sanity checks (pure half needs no DB)
 ```
+
+> After pulling these changes, run **`npm run db:push`** once to add the new columns
+> and tables (exit tunables, `actor_quality`, `self_reviews`, `briefings`,
+> `catalysts`, realized-P&L / peak-price fields). The data layer degrades gracefully
+> until you do, but the new stages need the schema.
 
 Offline-friendly: with `CONGRESS_SOURCE=seed` both feeds use deterministic seed data
 (overlapping tickers, so the convergence multiplier is demonstrable without network).
 
 ## Automatic running (GitHub Actions)
 
-Two scheduled workflows in `.github/workflows/` (both also run on demand via
+Three scheduled workflows in `.github/workflows/` (all also run on demand via
 `workflow_dispatch`, sharing a `brain` concurrency group):
 
 - **analyze.yml** — `~12:00 UTC` weekdays: `ingest → score → decide`
-- **execute.yml** — `~13:35 UTC` weekdays: `execute → baselines`
+- **execute.yml** — `~13:35 UTC` weekdays: `execute → exits → attribute → baselines → brief`
+- **review.yml** — `~14:00 UTC` Saturdays: the weekly `self-review`
 
 A deep Opus+thinking call can exceed Vercel's function timeout, so the brain runs on
 Actions (no ceiling, free). The Vercel-Pro all-in-one alternative is `app/api/cron`
