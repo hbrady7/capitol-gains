@@ -1,18 +1,17 @@
 /**
- * The decision brain — Claude Opus 4.8 + extended (adaptive) thinking is the
- * portfolio manager. It receives the decomposed CCS candidates + evidence, the
- * current portfolio, available cash, the control-panel config, recent decisions,
- * and baseline NAVs, then reasons deeply and selects the single best name + size
- * (or holds). A thin deterministic compliance desk (Phase 6) can only trim/block
- * what the model proposes — it never originates a decision.
+ * The decision brain — the portfolio manager. It receives the decomposed CCS
+ * candidates + evidence, the current portfolio, available cash, the control-panel
+ * config, recent decisions, and catalysts, then reasons deeply (extended thinking)
+ * and selects the single best name + size (or holds). A thin deterministic
+ * compliance desk can only trim/block what the model proposes — never originate.
  *
- * Output is a strict JSON contract via structured outputs; the full reasoning
- * trace (summarized thinking + the model's own `reasoning`) is persisted verbatim.
+ * Runs on the configured LLM provider (default: the FREE Gemini 2.5 tier; Claude
+ * Opus 4.8 as an opt-in) via lib/llm.ts. Output is a strict JSON contract; the full
+ * reasoning trace (summarized thinking + the model's own `reasoning`) is persisted.
  *
  * PROMPT-INJECTION GUARD: every candidate/evidence string is DATA, never an
  * instruction. The system prompt says so explicitly and the evidence is fenced.
  */
-import Anthropic from "@anthropic-ai/sdk";
 import { desc } from "drizzle-orm";
 import { db } from "./db";
 import { decisions } from "./schema";
@@ -21,8 +20,7 @@ import { getLatestCandidates } from "./score-run";
 import { getOpenPositions, getAvailableCash } from "./book";
 import { confidenceSize, MIN_SIZING_CONFIDENCE } from "./sizing";
 import { getCatalystsForTickers, type CatalystEvidence } from "./catalysts";
-
-const MODEL = "claude-opus-4-8";
+import { generateStructured, llmConfigured, llmKeyHint } from "./llm";
 
 export interface BrainDecision {
   ticker: string; // "" on hold
@@ -137,8 +135,7 @@ export interface DecideResult {
 }
 
 export async function runDecide(): Promise<DecideResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set — the decision brain needs it.");
+  if (!llmConfigured()) throw new Error(`The decision brain needs an LLM. ${llmKeyHint()}`);
 
   const cfg = await getRunConfig();
   const { runId, rows: candidates } = await getLatestCandidates(15);
@@ -166,35 +163,20 @@ export async function runDecide(): Promise<DecideResult> {
   }
 
   const catalysts = await getCatalystsForTickers(candidates.map((c) => c.ticker));
-  const client = new Anthropic({ apiKey });
   const userPrompt = buildUserPrompt({ cfg, candidates, positions, cash, recent: recentRows, catalysts });
 
-  // Deep reasoning: adaptive (extended) thinking + high effort, streamed so the
-  // long thinking pass doesn't hit an HTTP timeout. display:"summarized" so we can
-  // persist a readable reasoning trace.
-  const stream = client.messages.stream({
-    model: MODEL,
-    max_tokens: 32000,
-    thinking: { type: "adaptive", display: "summarized" },
-    output_config: { effort: "high", format: DECISION_SCHEMA },
+  // Deep reasoning: extended thinking + strict JSON, on the configured provider
+  // (free Gemini by default; Claude opt-in). The thinking summary is persisted.
+  const result = await generateStructured<BrainDecision>({
     system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: userPrompt }],
+    user: userPrompt,
+    schema: DECISION_SCHEMA.schema,
+    maxTokens: 32000,
   });
-  const message = await stream.finalMessage();
+  const decision = result.data;
+  const thinkingParts = result.reasoning ? [result.reasoning] : [];
+  const usedModel = result.model;
 
-  // Extract the JSON decision (text block) and the thinking summary (reasoning trace).
-  let jsonText = "";
-  const thinkingParts: string[] = [];
-  for (const block of message.content) {
-    if (block.type === "text") jsonText += block.text;
-    else if (block.type === "thinking") thinkingParts.push(block.thinking);
-  }
-  let decision: BrainDecision;
-  try {
-    decision = JSON.parse(jsonText) as BrainDecision;
-  } catch {
-    throw new Error(`Model did not return valid JSON. Raw: ${jsonText.slice(0, 500)}`);
-  }
   if (decision.action !== "buy") {
     decision.ticker = "";
     decision.dollar_size = 0;
@@ -225,8 +207,8 @@ export async function runDecide(): Promise<DecideResult> {
     .join("");
   decision.reasoning = fullReasoning || decision.reasoning;
 
-  const id = await persistDecision(decision, { runId, cfg, model: message.model || MODEL });
-  return { decisionId: id, decision, runId, model: message.model || MODEL };
+  const id = await persistDecision(decision, { runId, cfg, model: usedModel });
+  return { decisionId: id, decision, runId, model: usedModel };
 }
 
 async function persistDecision(

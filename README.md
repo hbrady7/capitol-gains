@@ -5,9 +5,11 @@ U.S. politicians and corporate insiders are buying the same stock at the same ti
 beat the market, and beat a dumb mechanical version of the same signal?**
 
 The brain runs **autonomously** on a GitHub Actions cron: **ingest → score → decide →
-execute → exit → learn → brief**. Claude (Opus 4.8 + extended thinking, via the
-Anthropic API) is the portfolio manager — it picks the single best name, sizes it by
-conviction, writes the rationale, and now also decides when to **sell**. A thin
+execute → exit → learn → brief**. The portfolio manager is an LLM — **free by
+default** (Google's Gemini 2.5 tier with extended thinking; Claude Opus 4.8 is a
+one-env-var opt-in) — that picks the single best name, sizes it by conviction, writes
+the rationale, and now also decides when to **sell**. The whole loop runs at **$0**
+on the free tier. A thin
 deterministic **compliance desk** sits between the model and the broker on both the
 buy and the sell side; it can only **halt or trim** an order, never originate or
 upsize one. Every closed trade feeds a **learning loop** that sharpens the score, and
@@ -29,7 +31,7 @@ score  ─ Convergence Conviction Score (CCS): per-ticker congressional + inside
   │        sub-scores, super-additive convergence multiplier, liquidity gate,
   │        TILTED by learned per-actor quality from past outcomes
   │        → scored_candidates (every sub-score + evidence stored)
-decide ─ Claude Opus 4.8 + extended thinking picks ONE buy (or holds), sized by
+decide ─ the LLM brain (free Gemini 2.5, extended thinking) picks ONE buy (or holds), sized by
   │        conviction; catalysts surfaced as fenced evidence
   │        → decisions (kind=entry; full reasoning trace, confidence, thesis, risks)
 execute─ compliance desk (block/trim only) → ExecutionAdapter.placeBuy
@@ -63,7 +65,7 @@ brief  ─ a warm, LLM-narrated morning digest (what it saw/did/why, book vs SPY
   like the drawdown breaker. **Discretionary exits** are LLM-reasoned: when a name
   falls off the fresh convergence list, the politicians/insiders who bought start
   **selling** (Form 4 code `S` is now ingested too), or a catalyst refutes the
-  thesis, Claude decides how much to trim. A **sell-compliance desk** mirrors the buy
+  thesis, the model decides how much to trim. A **sell-compliance desk** mirrors the buy
   side — it can only halt or trim, is long-only (never sells more than held, never
   shorts), and honors the kill switch. Realized P&L flows back into spendable cash.
 - **A learning loop.** Every closed trade is attributed back to the members and
@@ -95,14 +97,14 @@ added.
 
 ```bash
 npm install
-cp .env.example .env          # fill in DATABASE_URL (Neon) + ANTHROPIC_API_KEY
+cp .env.example .env          # fill in DATABASE_URL (Neon) + GEMINI_API_KEY (free)
 npm run db:push               # create the schema on Neon
 npm run dev                   # dashboard at http://localhost:3000
 
 # the pipeline (each is an npm script run via tsx)
 npm run ingest                # congress + EDGAR Form 4 (+ sells) + catalysts → DB
 npm run score                 # compute the CCS (attribution-tilted) → scored_candidates
-npm run decide                # Claude Opus 4.8 picks one buy or holds, sized by conviction
+npm run decide                # the LLM brain (free Gemini) picks one buy or holds, sized by conviction
 npm run execute               # buy compliance desk → place (paper by default)
 npm run exits                 # sell side: protective stops + LLM thesis exits
 npm run attribute             # learning loop: closed trades → actor quality
@@ -133,8 +135,8 @@ Three scheduled workflows in `.github/workflows/` (all also run on demand via
 - **execute.yml** — `~13:35 UTC` weekdays: `execute → exits → attribute → baselines → brief`
 - **review.yml** — `~14:00 UTC` Saturdays: the weekly `self-review`
 
-A deep Opus+thinking call can exceed Vercel's function timeout, so the brain runs on
-Actions (no ceiling, free). The Vercel-Pro all-in-one alternative is `app/api/cron`
+A deep reasoning+thinking call can exceed Vercel's function timeout, so the brain runs
+on Actions (no ceiling, free). The Vercel-Pro all-in-one alternative is `app/api/cron`
 (bearer-protected with `CRON_SECRET`) — see MIGRATION_NOTES.md.
 
 ### Environment variables
@@ -142,7 +144,10 @@ Actions (no ceiling, free). The Vercel-Pro all-in-one alternative is `app/api/cr
 | Variable | Where | Purpose |
 |---|---|---|
 | `DATABASE_URL` | Vercel + Actions | Neon Postgres connection string |
-| `ANTHROPIC_API_KEY` | Vercel + Actions | the decision brain |
+| `GEMINI_API_KEY` | Actions | **free** decision brain — get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| `GEMINI_MODEL` | Actions | optional; default `gemini-2.5-pro` (falls back to `gemini-2.5-flash`) |
+| `LLM_PROVIDER` | Actions | optional; `gemini` (default, free) or `anthropic` |
+| `ANTHROPIC_API_KEY` | Actions | optional — only when `LLM_PROVIDER=anthropic` (paid) |
 | `SEC_USER_AGENT` | Actions | EDGAR fair-access UA (`name email`) |
 | `CONGRESS_SOURCE` | Actions | `seed` \| `house-stock-watcher` \| `senate-stock-watcher` |
 | `QUOTE_SOURCE_URL` | Vercel + Actions | last-close source (synthetic fallback if down) |
@@ -150,8 +155,10 @@ Actions (no ceiling, free). The Vercel-Pro all-in-one alternative is `app/api/cr
 | `ALPACA_API_KEY` / `ALPACA_API_SECRET` / `ALPACA_PAPER` | Actions | live broker (only when paper_mode is off) |
 | `ROBINHOOD_AGENTIC_HEADLESS_CONFIRMED` | Actions | gate for the Robinhood agentic adapter |
 
-Set the same DB/Anthropic vars in **Vercel** (Project → Settings → Environment
-Variables) and in **GitHub Actions secrets** (repo → Settings → Secrets).
+The **dashboard** (Vercel) only needs `DATABASE_URL` — it reads the DB and never
+calls the LLM. The **autonomous brain** (GitHub Actions) needs `DATABASE_URL` +
+`GEMINI_API_KEY`. Set them in **Vercel** (Project → Settings → Environment Variables)
+and in **GitHub Actions secrets** (repo → Settings → Secrets) respectively.
 
 ## Deploy
 
@@ -166,7 +173,7 @@ Variables) and in **GitHub Actions secrets** (repo → Settings → Secrets).
 Each run snapshots three NAVs into `baselines` from the same starting capital: the
 **LLM** portfolio, **SPY** buy-and-hold, and a **naive top-tercile equal-weight**
 basket (every liquidity-passing convergence candidate, equal weight, no LLM). The
-Scoreboard charts all three. If Claude can't beat the naive basket, the reasoning
+Scoreboard charts all three. If the LLM can't beat the naive basket, the reasoning
 isn't adding anything — that's the whole point of the test.
 
 ## Before the first LIVE run

@@ -17,6 +17,11 @@ jobs:
     timeout-minutes: 30
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # Free decision brain (default). Get a key at https://aistudio.google.com/apikey
+      LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+      # Optional: only used when LLM_PROVIDER=anthropic
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
       CONGRESS_SOURCE: ${{ secrets.CONGRESS_SOURCE }}

@@ -18,6 +18,10 @@ jobs:
     timeout-minutes: 15
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # Free decision brain (default); Anthropic optional (LLM_PROVIDER=anthropic)
+      LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       QUOTE_SOURCE_URL: ${{ secrets.QUOTE_SOURCE_URL }}
       # Live broker creds — only used when paper_mode is off (set in the dashboard).

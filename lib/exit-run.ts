@@ -13,7 +13,6 @@
  *
  * PROMPT-INJECTION GUARD: all gathered evidence is DATA, never instructions.
  */
-import Anthropic from "@anthropic-ai/sdk";
 import { and, eq, gte, sql } from "drizzle-orm";
 import { db } from "./db";
 import { decisions, signals } from "./schema";
@@ -30,8 +29,7 @@ import {
 } from "./exits";
 import { checkSell } from "./exit-guardrails";
 import { makeAdapter } from "./execution";
-
-const MODEL = "claude-opus-4-8";
+import { generateStructured, llmConfigured } from "./llm";
 
 export interface ExitActionResult {
   ticker: string;
@@ -135,7 +133,7 @@ export async function runExits(): Promise<ExitRunResult> {
 
   // Discretionary exits — one LLM call reviews all flagged names at once.
   if (discretionary.length > 0) {
-    const proposals = await proposeDiscretionaryExits(cfg, discretionary);
+    const { proposals, model: exitModel } = await proposeDiscretionaryExits(cfg, discretionary);
     for (const d of discretionary) {
       const prop = proposals.find((x) => x.ticker.toUpperCase() === d.pos.ticker.toUpperCase());
       if (!prop || prop.action !== "sell") {
@@ -143,7 +141,7 @@ export async function runExits(): Promise<ExitRunResult> {
         await persistExitDecision(cfg, {
           ticker: d.pos.ticker,
           action: "hold",
-          model: MODEL,
+          model: exitModel,
           confidence: prop?.confidence ?? null,
           triggers: d.triggers,
           thesis: prop?.thesis ?? "Reviewed; thesis intact enough to hold.",
@@ -166,7 +164,7 @@ export async function runExits(): Promise<ExitRunResult> {
       const qty = Number((d.pos.qty * frac).toFixed(4));
       const action = await placeExit(cfg, d.pos.ticker, qty, {
         kind: "exit",
-        model: MODEL,
+        model: exitModel,
         confidence: prop.confidence,
         triggers: d.triggers,
         thesis: prop.thesis,
@@ -262,11 +260,10 @@ const EXIT_SCHEMA = {
 async function proposeDiscretionaryExits(
   cfg: RunConfig,
   items: { pos: { ticker: string; qty: number; avgPrice: number; openedAt: Date }; input: ExitPositionInput; triggers: ExitTrigger[]; thesis: ExitThesisSignals }[],
-): Promise<ExitProposal[]> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    // No key → conservative default: hold (protective stops already handled the rest).
-    return [];
+): Promise<{ proposals: ExitProposal[]; model: string }> {
+  if (!llmConfigured()) {
+    // No LLM → conservative default: hold (protective stops already handled the rest).
+    return { proposals: [], model: "none" };
   }
   const posLines = items.map((it) => {
     const p = it.input;
@@ -285,28 +282,18 @@ async function proposeDiscretionaryExits(
   ].join("\n");
 
   try {
-    const client = new Anthropic({ apiKey });
-    const stream = client.messages.stream({
-      model: MODEL,
-      max_tokens: 16000,
-      thinking: { type: "adaptive", display: "summarized" },
-      output_config: { effort: "high", format: EXIT_SCHEMA },
+    const result = await generateStructured<{ decisions: ExitProposal[] }>({
       system: EXIT_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: userPrompt }],
+      user: userPrompt,
+      schema: EXIT_SCHEMA.schema,
+      maxTokens: 16000,
     });
-    const message = await stream.finalMessage();
-    let jsonText = "";
-    const thinking: string[] = [];
-    for (const block of message.content) {
-      if (block.type === "text") jsonText += block.text;
-      else if (block.type === "thinking") thinking.push(block.thinking);
-    }
-    const parsed = JSON.parse(jsonText) as { decisions: ExitProposal[] };
-    const trace = thinking.length ? "\n\n--- extended thinking (summarized) ---\n" + thinking.join("\n") : "";
-    return (parsed.decisions ?? []).map((d) => ({ ...d, reasoning: (d.reasoning ?? "") + trace }));
+    const trace = result.reasoning ? "\n\n--- extended thinking (summarized) ---\n" + result.reasoning : "";
+    const proposals = (result.data.decisions ?? []).map((d) => ({ ...d, reasoning: (d.reasoning ?? "") + trace }));
+    return { proposals, model: result.model };
   } catch {
     // On any failure, hold — never fabricate a sell.
-    return [];
+    return { proposals: [], model: "none" };
   }
 }
 

@@ -7,7 +7,6 @@
  * assembled from the DB, and a deterministic fallback digest keeps it working with
  * no API key. PROMPT-INJECTION GUARD: the assembled facts are DATA.
  */
-import Anthropic from "@anthropic-ai/sdk";
 import { and, desc, eq, gte } from "drizzle-orm";
 import { db } from "./db";
 import { briefings, decisions } from "./schema";
@@ -17,8 +16,7 @@ import { getPortfolioView } from "./dashboard-v2";
 import { getLatestCandidates } from "./score-run";
 import { getRecentCatalysts } from "./catalysts";
 import { getRealizedPnl } from "./book";
-
-const MODEL = "claude-opus-4-8";
+import { generateText, llmConfigured } from "./llm";
 
 export interface BriefingResult {
   id: number | null;
@@ -59,23 +57,20 @@ export async function runBriefing(): Promise<BriefingResult> {
   const date = new Date().toISOString().slice(0, 10);
   const stats = await gatherStats(cfg.paperMode ? "paper" : "live");
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
   let markdown: string;
   let headline: string;
   let model = "none";
 
-  if (apiKey) {
+  if (llmConfigured()) {
     try {
-      const client = new Anthropic({ apiKey });
-      const msg = await client.messages.create({
-        model: MODEL,
-        max_tokens: 1500,
+      const r = await generateText({
         system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: `Today is ${date} (${stats.mode}). Facts:\n\n${JSON.stringify(stats, null, 2)}\n\nWrite the briefing.` }],
+        user: `Today is ${date} (${stats.mode}). Facts:\n\n${JSON.stringify(stats, null, 2)}\n\nWrite the briefing.`,
+        maxTokens: 2048,
       });
-      markdown = msg.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("").trim();
+      markdown = r.text.trim();
       headline = firstHeadline(markdown);
-      model = msg.model || MODEL;
+      model = r.model;
     } catch {
       ({ markdown, headline } = deterministicBriefing(stats));
     }

@@ -13,6 +13,7 @@ import { confidenceSize } from "../lib/sizing";
 import { computeExitSignals, hasProtective, hasDiscretionary } from "../lib/exits";
 import { computeQuality } from "../lib/attribution";
 import { runSyntheticBacktest } from "../lib/backtest";
+import { toGeminiSchema, extractJson } from "../lib/llm";
 
 const checks: [string, boolean, string][] = [];
 const check = (name: string, pass: boolean, detail: string) => checks.push([name, pass, detail]);
@@ -97,6 +98,24 @@ async function main() {
   const bt = runSyntheticBacktest({ days: 90, seed: 7 });
   check("backtest produces a full series", bt.series.length === 90, `${bt.series.length} points`);
   check("backtest metrics are finite", [bt.metrics.strategyReturn, bt.metrics.spyReturn, bt.metrics.naiveReturn, bt.metrics.vsSpy].every(Number.isFinite), `vsSpy=${bt.metrics.vsSpy}`);
+
+  // ── 2f. Pure: LLM provider helpers (free-Gemini path) ──
+  const gschema = toGeminiSchema({
+    type: "object",
+    additionalProperties: false,
+    properties: { ticker: { type: "string" }, size: { type: "number" }, action: { type: "string", enum: ["buy", "hold"] } },
+    required: ["ticker", "action"],
+  });
+  check(
+    "Gemini schema conversion (uppercase types, no additionalProperties, ordering)",
+    gschema.type === "OBJECT" &&
+      !("additionalProperties" in gschema) &&
+      Array.isArray(gschema.propertyOrdering) &&
+      (gschema.properties as Record<string, { type: string }>).size.type === "NUMBER",
+    `type=${gschema.type} order=${JSON.stringify(gschema.propertyOrdering)}`,
+  );
+  const parsed = extractJson<{ action: string }>("```json\n{\"action\":\"hold\"}\n```");
+  check("JSON extractor tolerates code fences", parsed.action === "hold", `action=${parsed.action}`);
 
   // ── 3. Data layer (needs DATABASE_URL) ──
   if (!process.env.DATABASE_URL) {
