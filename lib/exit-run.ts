@@ -16,7 +16,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { and, eq, gte, sql } from "drizzle-orm";
 import { db } from "./db";
-import { decisions, positions as positionsTable, signals } from "./schema";
+import { decisions, signals } from "./schema";
 import { getRunConfig, type RunConfig } from "./config";
 import { getOpenPositions, markPositions } from "./book";
 import { getLatestCandidates } from "./score-run";
@@ -429,6 +429,3 @@ async function persistExitDecision(
     .returning({ id: decisions.id });
   return row.id;
 }
-
-// silence unused import lint if positionsTable ends up unreferenced in some builds
-void positionsTable;

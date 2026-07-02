@@ -11,11 +11,16 @@ export function PortfolioCard({ pf }: { pf: PortfolioView }) {
         <span className="chip">{pf.paperMode ? "paper" : "live"}</span>
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
         <Stat label="Value" value={fmtUsd(pf.nav)} />
         <Stat label="Total return" value={fmtPct(ret)} color={retColor} />
         <Stat label="Cash" value={fmtUsd(pf.cash)} />
         <Stat label="Deployed" value={fmtUsd(pf.deployed)} />
+        <Stat
+          label="Realized P&L"
+          value={fmtUsd(pf.realizedPnl)}
+          color={pf.realizedPnl >= 0 ? "var(--sage)" : "var(--danger)"}
+        />
       </div>
 
       {pf.positions.length === 0 ? (
@@ -34,6 +39,7 @@ export function PortfolioCard({ pf }: { pf: PortfolioView }) {
                 <th className="pb-2 text-right font-medium">Last</th>
                 <th className="pb-2 text-right font-medium">Value</th>
                 <th className="pb-2 text-right font-medium">P&amp;L</th>
+                <th className="pb-2 text-right font-medium">Peak</th>
               </tr>
             </thead>
             <tbody>
@@ -49,6 +55,14 @@ export function PortfolioCard({ pf }: { pf: PortfolioView }) {
                     style={{ color: p.unrealizedPct >= 0 ? "var(--sage)" : "var(--danger)" }}
                   >
                     {fmtPct(p.unrealizedPct)}
+                  </td>
+                  <td
+                    className="py-2 text-right text-xs tabular-nums"
+                    style={p.drawdownFromPeakPct > 0.15 ? { color: "var(--danger)" } : undefined}
+                  >
+                    <span className={p.drawdownFromPeakPct > 0.15 ? "" : "faint"}>
+                      {p.drawdownFromPeakPct > 0 ? `${fmtPct(-p.drawdownFromPeakPct)} from peak` : "at peak"}
+                    </span>
                   </td>
                 </tr>
               ))}

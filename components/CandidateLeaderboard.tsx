@@ -1,9 +1,24 @@
 import type { CandidateView } from "@/lib/dashboard-v2";
-import { Landmark, Briefcase, Sparkles } from "lucide-react";
+import { Landmark, Briefcase, Sparkles, FileText, Megaphone, Gavel } from "lucide-react";
+
+interface CatalystChip {
+  kind: string;
+  direction: string;
+  weight: number;
+  headline: string;
+  date: string;
+}
+type CatalystMap = Record<string, CatalystChip[]>;
 
 /** The convergence leaderboard — each candidate's decomposed CCS shown visually
  *  (congress vs insider vs the convergence bonus) plus the supporting evidence. */
-export function CandidateLeaderboard({ candidates }: { candidates: CandidateView[] }) {
+export function CandidateLeaderboard({
+  candidates,
+  catalysts,
+}: {
+  candidates: CandidateView[];
+  catalysts?: CatalystMap;
+}) {
   if (candidates.length === 0) {
     return (
       <div className="card p-6 text-sm faint">
@@ -15,13 +30,13 @@ export function CandidateLeaderboard({ candidates }: { candidates: CandidateView
   return (
     <div className="space-y-3">
       {candidates.map((c) => (
-        <CandidateRow key={c.ticker} c={c} />
+        <CandidateRow key={c.ticker} c={c} catalysts={catalysts?.[c.ticker]} />
       ))}
     </div>
   );
 }
 
-function CandidateRow({ c }: { c: CandidateView }) {
+function CandidateRow({ c, catalysts }: { c: CandidateView; catalysts?: CatalystChip[] }) {
   const bonusPct = Math.round((c.convergenceMult - 1) * 100);
   const both = c.congNorm > 0 && c.insNorm > 0;
   const members = c.evidence.congress ?? [];
@@ -93,8 +108,34 @@ function CandidateRow({ c }: { c: CandidateView }) {
             illiquid
           </span>
         )}
+        {(catalysts ?? []).map((cat, i) => (
+          <CatalystChipView key={`cat${i}`} cat={cat} />
+        ))}
       </div>
     </div>
+  );
+}
+
+function CatalystChipView({ cat }: { cat: CatalystChip }) {
+  const support = cat.direction === "support";
+  const color = support ? "var(--sage)" : "var(--danger)";
+  const bg = support ? "var(--sage-soft)" : "var(--danger-soft)";
+  const icon =
+    cat.kind === "contract" ? (
+      <FileText size={11} />
+    ) : cat.kind === "lobbying" ? (
+      <Megaphone size={11} />
+    ) : (
+      <Gavel size={11} />
+    );
+  return (
+    <span
+      className="chip"
+      style={{ background: bg, borderColor: "transparent", color }}
+      title={`${cat.headline} · ${cat.date}`}
+    >
+      {icon} {cat.kind}
+    </span>
   );
 }
 

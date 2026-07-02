@@ -6,7 +6,14 @@ import { desc, eq } from "drizzle-orm";
 import { db } from "./db";
 import { decisions, fills, scoredCandidates } from "./schema";
 import { getRunConfig } from "./config";
-import { getOpenPositions, getAvailableCash, getNav, getDeployedCost, PAPER_STARTING_CAPITAL } from "./book";
+import {
+  getOpenPositions,
+  getAvailableCash,
+  getNav,
+  getDeployedCost,
+  getRealizedPnl,
+  PAPER_STARTING_CAPITAL,
+} from "./book";
 import { getLastCloses } from "./quotes";
 import type { CandidateSubScores } from "./scoring";
 
@@ -21,9 +28,38 @@ export async function getLatestDecision(): Promise<DecisionRow | null> {
   }
 }
 
+/** Latest ENTRY (buy/hold) decision — the hero card on Today. */
+export async function getLatestEntryDecision(): Promise<DecisionRow | null> {
+  try {
+    const [row] = await db
+      .select()
+      .from(decisions)
+      .where(eq(decisions.kind, "entry"))
+      .orderBy(desc(decisions.createdAt))
+      .limit(1);
+    return row ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getRecentDecisions(limit = 30): Promise<DecisionRow[]> {
   try {
     return await db.select().from(decisions).orderBy(desc(decisions.createdAt)).limit(limit);
+  } catch {
+    return [];
+  }
+}
+
+/** Recent EXIT decisions (sell/hold-reviews) for the exit-desk strip + journal. */
+export async function getRecentExitDecisions(limit = 12): Promise<DecisionRow[]> {
+  try {
+    return await db
+      .select()
+      .from(decisions)
+      .where(eq(decisions.kind, "exit"))
+      .orderBy(desc(decisions.createdAt))
+      .limit(limit);
   } catch {
     return [];
   }
@@ -94,12 +130,18 @@ export interface PositionView {
   unrealizedPct: number;
 }
 
+export interface PositionViewX extends PositionView {
+  peakPrice: number | null;
+  drawdownFromPeakPct: number;
+}
+
 export interface PortfolioView {
   paperMode: boolean;
-  positions: PositionView[];
+  positions: PositionViewX[];
   cash: number;
   nav: number;
   deployed: number;
+  realizedPnl: number;
   startingCapital: number;
   totalReturnPct: number;
   connected: boolean;
@@ -111,9 +153,11 @@ export async function getPortfolioView(): Promise<PortfolioView> {
   const cash = await getAvailableCash(cfg);
   const deployed = await getDeployedCost(cfg);
   const nav = await getNav(cfg);
+  const realizedPnl = await getRealizedPnl(cfg);
   const quotes = pos.length ? await getLastCloses(pos.map((p) => p.ticker)) : {};
-  const positions: PositionView[] = pos.map((p) => {
+  const positions: PositionViewX[] = pos.map((p) => {
     const last = quotes[p.ticker]?.price ?? p.avgPrice;
+    const peak = p.peakPrice ?? p.avgPrice;
     return {
       ticker: p.ticker,
       qty: Number(p.qty.toFixed(4)),
@@ -122,6 +166,8 @@ export async function getPortfolioView(): Promise<PortfolioView> {
       marketValue: Number((p.qty * last).toFixed(2)),
       costBasis: Number((p.qty * p.avgPrice).toFixed(2)),
       unrealizedPct: p.avgPrice > 0 ? last / p.avgPrice - 1 : 0,
+      peakPrice: p.peakPrice != null ? Number(p.peakPrice.toFixed(2)) : null,
+      drawdownFromPeakPct: peak > 0 ? (peak - last) / peak : 0,
     };
   });
   return {
@@ -130,6 +176,7 @@ export async function getPortfolioView(): Promise<PortfolioView> {
     cash: Number(cash.toFixed(2)),
     nav: Number(nav.toFixed(2)),
     deployed: Number(deployed.toFixed(2)),
+    realizedPnl: Number(realizedPnl.toFixed(2)),
     startingCapital: PAPER_STARTING_CAPITAL,
     totalReturnPct: PAPER_STARTING_CAPITAL > 0 ? nav / PAPER_STARTING_CAPITAL - 1 : 0,
     connected: pos.length > 0,

@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import type { RunConfig } from "@/lib/config";
-import { Power, ShieldOff, AlertTriangle } from "lucide-react";
+import { Power, ShieldOff, AlertTriangle, LogOut, Gauge } from "lucide-react";
 
 /** Reassuring, clearly-labeled controls that write straight to the config table. */
 export function ControlPanel({ initial }: { initial: RunConfig }) {
@@ -80,6 +80,39 @@ export function ControlPanel({ initial }: { initial: RunConfig }) {
           {num("maxOpenPositions", "Max open positions", "How many names at once")}
           {num("drawdownHaltPct", "Drawdown halt", "Trip the kill switch if down this % from the high", 1)}
           {num("cooldownDays", "Cooldown days", "Don't re-buy a name within this many days")}
+        </div>
+      </div>
+
+      {/* Exit desk. */}
+      <div className="card p-5">
+        <h3 className="mb-1 text-sm font-semibold uppercase tracking-wide faint">Exit desk</h3>
+        <div className="divide-y divide-[var(--border)]">
+          <div className="py-2.5">
+            <Toggle
+              on={cfg.exitsEnabled}
+              onLabel="Exit desk enabled"
+              offLabel="Exit desk off — positions aren't reviewed for exit"
+              icon={<LogOut size={18} />}
+              danger={false}
+              onToggle={() => patch({ exitsEnabled: !cfg.exitsEnabled })}
+              hint="When on, open positions are reviewed each run for stops, take-profit, and thesis decay."
+            />
+          </div>
+          <div className="py-2.5">
+            <Toggle
+              on={cfg.confidenceSizing}
+              onLabel="Confidence sizing enabled"
+              offLabel="Confidence sizing off — flat sizing"
+              icon={<Gauge size={18} />}
+              danger={false}
+              onToggle={() => patch({ confidenceSizing: !cfg.confidenceSizing })}
+              hint="Scale each buy by the model's stated confidence (still capped by the limits above)."
+            />
+          </div>
+          {num("trailingStopPct", "Trailing stop", "Exit if down this % from the position's peak", 1)}
+          {num("hardStopPct", "Hard stop", "Exit if down this % from entry", 1)}
+          {num("takeProfitPct", "Take profit", "Exit if up this % from entry (0 = off)", 1)}
+          {num("maxHoldDays", "Max hold days", "Exit a position after this many days")}
         </div>
       </div>
 
