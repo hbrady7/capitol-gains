@@ -4,8 +4,7 @@ name: execute (market open)
 # place it via the adapter chosen by paper_mode. Paper by default — nothing real
 # is placed until a human flips paper_mode off in the dashboard.
 on:
-  schedule:
-    - cron: "35 13 * * 1-5" # ~13:35 UTC (~9:35 ET), just after US market open
+  # Scheduled morning run disabled — trigger manually from the Actions tab.
   workflow_dispatch: {}
 
 concurrency:

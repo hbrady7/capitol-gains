@@ -3,8 +3,7 @@ name: analyze (pre-open)
 # Pre-open analysis: ingest both feeds → score the CCS → let Opus decide.
 # Execution is a SEPARATE workflow (execute.yml) that runs at market open.
 on:
-  schedule:
-    - cron: "0 12 * * 1-5" # ~12:00 UTC, weekdays (before US market open)
+  # Scheduled morning run disabled — trigger manually from the Actions tab.
   workflow_dispatch: {} # allow manual runs from the Actions tab
 
 concurrency:
